@@ -1,5 +1,6 @@
 use re_arrow_store::Timeline;
 use re_data_store::{EntityPath, EntityPropertyMap, EntityTree, InstancePath, TimeInt};
+use re_log_types::EntityPathPart;
 use re_renderer::{GpuReadbackIdentifier, ScreenshotProcessor};
 
 use crate::{
@@ -81,6 +82,7 @@ pub struct SpaceView {
 
 impl SpaceView {
     pub fn new(
+        ctx: &ViewerContext<'_>,
         category: ViewCategory,
         space_path: &EntityPath,
         queries_entities: &[EntityPath],
@@ -89,31 +91,41 @@ impl SpaceView {
         // this led to somewhat confusing and inconsistent behavior. See https://github.com/rerun-io/rerun/issues/1220
         // Spaces are now always named after the final element of the space-path (or the root), independent of the
         // query entities.
-        let mut is_depthai_spaceview = true;
-        let display_name = match space_path {
-            ep if ep.hash() == depthai::entity_paths::RGB_PINHOLE_CAMERA.hash() => {
-                "Color camera (2D)".into()
+        let mut is_depthai_spaceview = false;
+        let display_name = if let Some(board_socket_part) = space_path.as_slice().first() {
+            let is_3d = space_path.len() == 1;
+            let mut is_2d = false;
+            if !is_3d {
+                let last_part = space_path.iter().last().unwrap();
+                is_2d = (last_part == &EntityPathPart::from("mono_cam")
+                    || last_part == &EntityPathPart::from("color_cam"))
+                    && last_part != &EntityPathPart::from("transform");
             }
-            ep if ep.hash() == depthai::entity_paths::COLOR_CAM_3D.hash() => {
-                "Color camera (3D)".into()
-            }
-            ep if ep.hash() == depthai::entity_paths::RIGHT_PINHOLE_CAMERA.hash() => {
-                "Right mono camera (2D)".into()
-            }
-            ep if ep.hash() == depthai::entity_paths::LEFT_PINHOLE_CAMERA.hash() => {
-                "Left mono camera (2D)".into()
-            }
-            ep if ep.hash() == depthai::entity_paths::MONO_CAM_3D.hash() => {
-                "Mono cameras (3D)".into()
-            }
-            _ => {
-                is_depthai_spaceview = false;
-                if let Some(entity_path_part) = space_path.iter().last() {
-                    entity_path_part.to_string()
+            if let Some(board_socket) =
+                depthai::CameraBoardSocket::from(board_socket_part.to_string())
+            {
+                let camera_features = ctx.depthai_state.get_connected_cameras();
+                if let Some(camera) = camera_features
+                    .iter()
+                    .find(|camera| camera.board_socket == board_socket)
+                {
+                    if is_3d {
+                        is_depthai_spaceview = true;
+                        format!("{} ({})", camera.board_socket.display_name(ctx), "3D")
+                    } else if is_2d {
+                        is_depthai_spaceview = true;
+                        format!("{} ({})", camera.board_socket.display_name(ctx), "2D")
+                    } else {
+                        space_path.iter().last().unwrap().to_string()
+                    }
                 } else {
-                    format!("/ ({category})")
+                    space_path.iter().last().unwrap().to_string()
                 }
+            } else {
+                space_path.iter().last().unwrap().to_string()
             }
+        } else {
+            format!("/ ({category})")
         };
 
         let mut data_blueprint_tree = DataBlueprintTree::default();
@@ -309,10 +321,12 @@ impl SpaceView {
     pub fn remove_entity_subtree(&mut self, tree: &EntityTree) {
         crate::profile_function!();
 
-        tree.visit_children_recursively(&mut |path: &EntityPath| {
-            self.data_blueprint.remove_entity(path);
-            self.entities_determined_by_user = true;
-        });
+        tree.visit_children_recursively(
+            &mut (|path: &EntityPath| {
+                self.data_blueprint.remove_entity(path);
+                self.entities_determined_by_user = true;
+            }),
+        );
     }
 
     /// Adds a subtree of entities to the blueprint tree and creates groups as needed.
@@ -327,19 +341,21 @@ impl SpaceView {
         crate::profile_function!();
 
         let mut entities = Vec::new();
-        tree.visit_children_recursively(&mut |entity_path: &EntityPath| {
-            let entity_categories =
-                categorize_entity_path(Timeline::log_time(), log_db, entity_path);
+        tree.visit_children_recursively(
+            &mut (|entity_path: &EntityPath| {
+                let entity_categories =
+                    categorize_entity_path(Timeline::log_time(), log_db, entity_path);
 
-            if entity_categories.contains(self.category)
-                && !self.data_blueprint.contains_entity(entity_path)
-                && spaces_info
-                    .is_reachable_by_transform(entity_path, &self.space_path)
-                    .is_ok()
-            {
-                entities.push(entity_path.clone());
-            }
-        });
+                if entity_categories.contains(self.category)
+                    && !self.data_blueprint.contains_entity(entity_path)
+                    && spaces_info
+                        .is_reachable_by_transform(entity_path, &self.space_path)
+                        .is_ok()
+                {
+                    entities.push(entity_path.clone());
+                }
+            }),
+        );
 
         if !entities.is_empty() {
             self.data_blueprint
@@ -440,10 +456,10 @@ impl ViewState {
         ui: &mut egui::Ui,
         scene: &view_text::SceneText,
     ) {
-        egui::Frame {
+        (egui::Frame {
             inner_margin: re_ui::ReUi::view_padding().into(),
             ..egui::Frame::default()
-        }
+        })
         .show(ui, |ui| {
             view_text::view_text(ctx, ui, &mut self.state_text, scene);
         });
@@ -455,10 +471,10 @@ impl ViewState {
         ui: &mut egui::Ui,
         scene: &view_node_graph::SceneNodeGraph,
     ) {
-        egui::Frame {
+        (egui::Frame {
             inner_margin: re_ui::ReUi::view_padding().into(),
             ..egui::Frame::default()
-        }
+        })
         .show(ui, |ui| {
             view_node_graph::view_node_graph(ctx, ui, &mut self.state_node_graph, scene)
         });

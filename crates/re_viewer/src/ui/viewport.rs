@@ -5,9 +5,14 @@
 use ahash::HashMap;
 use itertools::Itertools as _;
 
-use re_data_store::EntityPath;
+use re_arrow_store::LatestAtQuery;
+use re_data_store::{query_latest_single, EntityPath};
+use re_log_types::{
+    component_types::TensorDataMeaning, EntityPathPart, Tensor, Time, TimeInt, Timeline,
+};
 
 use crate::{
+    depthai::depthai,
     misc::{space_info::SpaceInfoCollection, Item, SpaceViewHighlights, ViewerContext},
     ui::{space_view_heuristics::default_created_space_views, stats_panel::StatsPanel},
 };
@@ -16,7 +21,8 @@ use super::{
     device_settings_panel::DeviceSettingsPanel, selection_panel::SelectionPanel,
     space_view_entity_picker::SpaceViewEntityPicker,
     space_view_heuristics::all_possible_space_views, stats_panel::StatsPanelState,
-    view_category::ViewCategory, SpaceView, SpaceViewId, SpaceViewKind,
+    view_category::ViewCategory, view_spatial::SpatialNavigationMode, SpaceView, SpaceViewId,
+    SpaceViewKind,
 };
 
 // ----------------------------------------------------------------------------
@@ -64,7 +70,9 @@ impl Viewport {
         crate::profile_function!();
 
         let mut blueprint = Self::default();
-        for space_view in default_created_space_views(ctx, spaces_info) {
+        for space_view in all_possible_space_views(ctx, spaces_info)
+        {
+            println!("All possible: {:?}", space_view.space_path);
             blueprint.add_space_view(space_view);
         }
         blueprint
@@ -115,8 +123,6 @@ impl Viewport {
     ) {
         crate::profile_function!();
 
-        let entities_to_remove = ctx.depthai_state.get_entities_to_remove();
-
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
@@ -127,9 +133,7 @@ impl Viewport {
                 // as they didn't create the blueprint by logging the data
                 for space_view in all_possible_space_views(ctx, spaces_info)
                     .into_iter()
-                    .filter(|sv| {
-                        sv.is_depthai_spaceview && !entities_to_remove.contains(&sv.space_path)
-                    })
+                    .filter(|sv| sv.is_depthai_spaceview)
                 {
                     self.available_space_view_row_ui(ctx, ui, space_view);
                 }
@@ -229,54 +233,66 @@ impl Viewport {
         self.space_view_entity_window = Some(SpaceViewEntityPicker { space_view_id });
     }
 
+    /// Gets the space views that don't actually have an instance associated with them
+    fn get_space_views_to_delete(
+        &mut self,
+        ctx: &mut ViewerContext<'_>,
+        spaces_info: &SpaceInfoCollection,
+    ) -> Vec<SpaceViewId> {
+        let mut space_views_to_delete = Vec::new();
+        let binding = all_possible_space_views(ctx, spaces_info);
+        let possible_space_views = binding
+            .iter()
+            .cloned()
+            .filter(|sv| sv.is_depthai_spaceview)
+            .collect_vec();
+        for space_view in &possible_space_views {
+            let mut found = false;
+            for existing_view in self.space_views.values() {
+                if existing_view.space_path == space_view.space_path {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                space_views_to_delete.push(space_view.id);
+            }
+        }
+        for space_view in self.space_views.values() {
+            if !possible_space_views
+                .iter()
+                .map(|sv| sv.space_path.clone())
+                .contains(&space_view.space_path)
+            {
+                self.has_been_user_edited
+                    .insert(space_view.space_path.clone(), false);
+                space_views_to_delete.push(space_view.id);
+            }
+        }
+        space_views_to_delete
+    }
+
     pub fn on_frame_start(
         &mut self,
         ctx: &mut ViewerContext<'_>,
         spaces_info: &SpaceInfoCollection,
     ) {
         crate::profile_function!();
-        let mut space_views_to_remove = Vec::new();
 
-        // Get all the entity paths that aren't logged anymore
-        let entities_to_remove = ctx.depthai_state.get_entities_to_remove();
-        // First clear the has_been_user_edited entry, so if the entity path is a space path and it reappeaars later,
-        // it will get added back into the viewport
-        for ep in &entities_to_remove {
-            self.has_been_user_edited.insert(ep.clone(), false);
-        }
+        // for space_view_id in &self.get_space_views_to_delete(ctx, spaces_info) {
+        //     self.remove(space_view_id);
+        // }
+
         self.stats_panel_state.update(ctx);
 
-        // Remove all entities that are marked for removal from the space view.
-        // Remove the space view if it has no entities left
         for space_view in self.space_views.values_mut() {
-            if let Some(group) = space_view
-                .data_blueprint
-                .group(space_view.data_blueprint.root_handle())
-            {
-                for ep in entities_to_remove.iter() {
-                    space_view.data_blueprint.remove_entity(ep);
-                }
-
-                if space_view.data_blueprint.entity_paths().is_empty() {
-                    space_views_to_remove.push(space_view.id);
-                    self.has_been_user_edited
-                        .insert(space_view.space_path.clone(), false);
-                    continue;
-                }
-            }
             space_view.on_frame_start(ctx, spaces_info);
-        }
-        for id in &space_views_to_remove {
-            if self.space_views.get(id).is_some() {
-                self.remove(id);
-            }
         }
         for space_view_candidate in default_created_space_views(ctx, spaces_info) {
             if !self
                 .has_been_user_edited
                 .get(&space_view_candidate.space_path)
                 .unwrap_or(&false)
-                && !entities_to_remove.contains(&space_view_candidate.space_path)
                 && self.should_auto_add_space_view(&space_view_candidate)
             {
                 self.add_space_view(space_view_candidate);
@@ -337,24 +353,12 @@ impl Viewport {
             .trees
             .entry(visible_space_views.clone())
             .or_insert_with(|| {
-                // TODO(filip): Continue working on this smart layout updater
-                // if let Some(previous_frame_tree) = &self.previous_frame_tree {
-                //     let mut tree = previous_frame_tree.clone();
-                //     super::auto_layout::update_tree(
-                //         &mut tree,
-                //         &visible_space_views,
-                //         &self.space_views,
-                //         self.maximized.is_some(),
-                //     );
-                //     tree
-                // } else {
                 super::auto_layout::default_tree_from_space_views(
                     ui.available_size(),
                     &visible_space_views,
                     &self.space_views,
                     self.maximized.is_some(),
                 )
-                // }
             })
             .clone();
         self.previous_frame_tree = Some(tree.clone());
@@ -414,6 +418,42 @@ impl Viewport {
         {
             match space_view_kind {
                 SpaceViewKind::Data | SpaceViewKind::Stats => {
+                    let mut entities_to_skip = Vec::new();
+                    if let Some(space_view) = self.space_views.get_mut(&space_view_id) {
+                        let mut is3d = false;
+                        let mut has_depth = false;
+                        let mut image_to_hide = None;
+                        space_view.data_blueprint.visit_group_entities_recursively(
+                            space_view.data_blueprint.root_handle(),
+                            &mut (|entity_path| {
+                                if is3d && has_depth {
+                                    if let Some(last_part) = entity_path.iter().last() {
+                                        if last_part == &EntityPathPart::from("Image") {
+                                            image_to_hide = Some(entity_path.clone());
+                                        }
+                                    }
+                                }
+                                is3d |= entity_path.len() == 2
+                                    && entity_path.iter().last().unwrap()
+                                        == &EntityPathPart::from("transform");
+                                if let Some(last_part) = entity_path.iter().last() {
+                                    has_depth |= last_part == &EntityPathPart::from("Depth");
+                                }
+                            }),
+                        );
+                        if let Some(image_to_hide) = image_to_hide {
+                            entities_to_skip.push(image_to_hide.clone());
+                            let mut props = space_view
+                                .data_blueprint
+                                .data_blueprints_individual()
+                                .get(&image_to_hide);
+                            props.visible = false;
+                            space_view
+                                .data_blueprint
+                                .data_blueprints_individual()
+                                .set(image_to_hide.clone(), props);
+                        }
+                    }
                     space_view_options_ui(
                         ctx,
                         ui,
@@ -421,6 +461,7 @@ impl Viewport {
                         tab_bar_rect,
                         space_view_id,
                         num_space_views,
+                        entities_to_skip.as_slice(),
                     );
                 }
                 SpaceViewKind::Selection => {
@@ -677,6 +718,7 @@ fn space_view_options_ui(
     tab_bar_rect: egui::Rect,
     space_view_id: SpaceViewId,
     num_space_views: usize,
+    entities_to_skip: &[EntityPath],
 ) {
     let tab_bar_rect = tab_bar_rect.shrink2(egui::vec2(4.0, 0.0)); // Add some side margin outside the frame
 
@@ -718,17 +760,18 @@ fn space_view_options_ui(
                 ui.style_mut().wrap = Some(false);
                 let entities = space_view.data_blueprint.entity_paths().clone();
                 let entities = entities.iter().filter(|ep| {
-                    let eps_to_skip = vec![
-                        EntityPath::from("color/camera/rgb"),
-                        EntityPath::from("color/camera"),
-                        EntityPath::from("mono/camera"),
-                        EntityPath::from("mono/camera/left_mono"),
-                        EntityPath::from("mono/camera/right_mono"),
-                    ];
-                    !eps_to_skip.contains(ep)
+                    if let Some(last_part) = ep.iter().last() {
+                        last_part != &EntityPathPart::from("transform")
+                            && (last_part != &EntityPathPart::from("mono_cam")
+                                || last_part != &EntityPathPart::from("color_cam"))
+                    } else {
+                        false
+                    }
                 });
                 for entity_path in entities {
-                    // if matches!(entity_path, EntityPath::from("color"))
+                    if entities_to_skip.contains(entity_path) {
+                        continue;
+                    }
                     ui.horizontal(|ui| {
                         let mut properties = space_view
                             .data_blueprint

@@ -113,12 +113,17 @@ impl PythonSession {
         sys_exe: SysExePath,
     ) {
         self.recording_meta_data.recording_source =
-            re_log_types::RecordingSource::PythonSdk(python_version, sys_exe);
+            re_log_types::RecordingSource::PythonSdk(python_version, sys_exe, String::new());
     }
 
     /// Check if logging is enabled on this `Session`.
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub fn version(&self) -> String {
+        let build_info = re_build_info::build_info!();
+        build_info.version.to_string()
     }
 
     /// Enable or disable logging on this `Session`.

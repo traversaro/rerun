@@ -50,6 +50,12 @@ pub struct StartupOptions {
     pub persist_state: bool,
 }
 
+#[derive(Clone, Default)]
+pub struct BackendEnvironment {
+    pub python_path: String,
+    pub venv_site_packages: String,
+}
+
 // ----------------------------------------------------------------------------
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -103,7 +109,7 @@ pub struct App {
     icon_status: AppIconStatus,
 
     #[cfg(not(target_arch = "wasm32"))]
-    python_path: Option<String>,
+    backend_environment: Option<BackendEnvironment>,
 
     #[cfg(not(target_arch = "wasm32"))]
     backend_handle: Option<std::process::Child>,
@@ -111,13 +117,13 @@ pub struct App {
 
 impl App {
     #[cfg(not(target_arch = "wasm32"))]
-    fn spawn_backend(python_path: &Option<String>) -> Option<std::process::Child> {
-        // TODO(filip): Is there some way I can know for sure where depthai_viewer_backend is?
-        let Some(py_path) = python_path else {
-            panic!("Python path is missing, exiting...");
+    fn spawn_backend(environment: &Option<BackendEnvironment>) -> Option<std::process::Child> {
+        let Some(environment) = environment else {
+            panic!("Backend environment is missing, exiting...");
         };
-        let backend_handle = match std::process::Command::new(py_path)
+        let backend_handle = match std::process::Command::new(environment.python_path.clone())
             .args(["-m", "depthai_viewer._backend.main"])
+            .env("PYTHONPATH", environment.venv_site_packages.clone())
             .spawn()
         {
             Ok(child) => {
@@ -125,14 +131,10 @@ impl App {
                 Some(child)
             }
             Err(err) => {
-                eprintln!("Failed to start depthai viewer: {err}");
+                eprintln!("Failed to start depthai viewer backend: {err}.");
                 None
             }
         };
-        // assert!(
-        //     backend_handle.is_some(),
-        //     "Couldn't start backend, exiting..."
-        // );
         backend_handle
     }
 
@@ -166,8 +168,11 @@ impl App {
         analytics.on_viewer_started(&build_info, app_env);
 
         #[cfg(not(target_arch = "wasm32"))]
-        let python_path = match app_env {
-            AppEnvironment::PythonSdk(_, py_path) => Some(py_path.clone()),
+        let backend_environment = match app_env {
+            AppEnvironment::PythonSdk(_, py_path, venv_site_packages) => Some(BackendEnvironment {
+                python_path: py_path.clone(),
+                venv_site_packages: venv_site_packages.clone(),
+            }),
             _ => None,
         };
 
@@ -199,9 +204,9 @@ impl App {
             icon_status: AppIconStatus::NotSetTryAgain,
 
             #[cfg(not(target_arch = "wasm32"))]
-            python_path: python_path.clone(),
+            backend_environment: backend_environment.clone(),
             #[cfg(not(target_arch = "wasm32"))]
-            backend_handle: App::spawn_backend(&python_path),
+            backend_handle: App::spawn_backend(&backend_environment),
         }
     }
 
@@ -308,7 +313,7 @@ impl App {
             Command::Quit => {
                 self.state.depthai_state.shutdown();
                 if let Some(backend_handle) = &mut self.backend_handle {
-                    backend_handle.kill();
+                    backend_handle.kill().expect("Failed to kill backend");
                 }
                 _frame.close();
             }
@@ -368,20 +373,18 @@ impl App {
             }
             Command::ToggleCommandPalette => {
                 self.cmd_palette.toggle();
-            }
-
-            Command::PlaybackTogglePlayPause => {
-                self.run_time_control_command(TimeControlCommand::TogglePlayPause);
-            }
-            Command::PlaybackStepBack => {
-                self.run_time_control_command(TimeControlCommand::StepBack);
-            }
-            Command::PlaybackStepForward => {
-                self.run_time_control_command(TimeControlCommand::StepForward);
-            }
-            Command::PlaybackRestart => {
-                self.run_time_control_command(TimeControlCommand::Restart);
-            }
+            } // Command::PlaybackTogglePlayPause => {
+              //     self.run_time_control_command(TimeControlCommand::TogglePlayPause);
+              // }
+              // Command::PlaybackStepBack => {
+              //     self.run_time_control_command(TimeControlCommand::StepBack);
+              // }
+              // Command::PlaybackStepForward => {
+              //     self.run_time_control_command(TimeControlCommand::StepForward);
+              // }
+              // Command::PlaybackRestart => {
+              //     self.run_time_control_command(TimeControlCommand::Restart);
+              // }
         }
     }
 
@@ -489,19 +492,19 @@ impl eframe::App for App {
                             handle.kill();
                             self.state.depthai_state.reset();
                             re_log::debug!("Backend process has exited, restarting!");
-                            self.backend_handle = App::spawn_backend(&self.python_path);
+                            self.backend_handle = App::spawn_backend(&self.backend_environment);
                         }
                     }
                     Err(_) => {}
                 },
-                None => self.backend_handle = App::spawn_backend(&self.python_path),
+                None => self.backend_handle = App::spawn_backend(&self.backend_environment),
             };
         }
 
         #[cfg(not(target_arch = "wasm32"))]
         {
             if self.backend_handle.is_none() {
-                self.backend_handle = App::spawn_backend(&self.python_path);
+                self.backend_handle = App::spawn_backend(&self.backend_environment);
             };
         }
 
@@ -850,12 +853,15 @@ impl App {
             }
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        for log_db in self.log_dbs.values_mut() {
+            log_db.clear_by_cutoff(2e9 as i64);
+        }
+
         use re_format::format_bytes;
         use re_memory::MemoryUse;
-
         let limit = self.startup_options.memory_limit;
         let mem_use_before = MemoryUse::capture();
-
         if let Some(minimum_fraction_to_purge) = limit.is_exceeded_by(&mem_use_before) {
             let fraction_to_purge = (minimum_fraction_to_purge + 0.2).clamp(0.25, 1.0);
 
@@ -880,23 +886,23 @@ impl App {
                     log_db.purge_fraction_of_ram(fraction_to_purge);
                 }
                 self.state.cache.purge_memory();
+
+                let mem_use_after = MemoryUse::capture();
+
+                let freed_memory = mem_use_before - mem_use_after;
+
+                if let (Some(counted_before), Some(counted_diff)) =
+                    (mem_use_before.counted, freed_memory.counted)
+                {
+                    re_log::debug!(
+                        "Freed up {} ({:.1}%)",
+                        format_bytes(counted_diff as _),
+                        100.0 * counted_diff as f32 / counted_before as f32
+                    );
+                }
+
+                self.memory_panel.note_memory_purge();
             }
-
-            let mem_use_after = MemoryUse::capture();
-
-            let freed_memory = mem_use_before - mem_use_after;
-
-            if let (Some(counted_before), Some(counted_diff)) =
-                (mem_use_before.counted, freed_memory.counted)
-            {
-                re_log::debug!(
-                    "Freed up {} ({:.1}%)",
-                    format_bytes(counted_diff as _),
-                    100.0 * counted_diff as f32 / counted_before as f32
-                );
-            }
-
-            self.memory_panel.note_memory_purge();
         }
     }
 
@@ -1017,7 +1023,7 @@ struct AppState {
     /// Configuration for the current recording (found in [`LogDb`]).
     recording_configs: IntMap<RecordingId, RecordingConfig>,
 
-    #[serde(skip)] // Quick fix for subscriptions setting, just don't remembet space views
+    #[serde(skip)] // Quick fix for subscriptions setting, just don't remember space views
     blueprints: HashMap<ApplicationId, crate::ui::Blueprint>,
 
     /// Which view panel is currently being shown

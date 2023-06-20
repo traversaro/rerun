@@ -45,6 +45,7 @@ serde = [
 [dependencies]
 
 # Rerun
+re_renderer.workspace = true
 re_format.workspace = true
 re_log.workspace = true
 re_string_interner.workspace = true
@@ -79,7 +80,6 @@ time = { workspace = true, default-features = false, features = [
 ] }
 typenum = "1.15"
 uuid = { version = "1.1", features = ["serde", "v4", "js"] }
-
 
 # Optional dependencies:
 ecolor = { workspace = true, optional = true }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from enum import Enum
 from typing import Final, Iterable, Union, cast
 
 import numpy as np
@@ -18,7 +19,13 @@ __all__ = [
     "TensorArray",
     "TensorType",
     "TensorDType",
+    "ImageEncoding",
 ]
+
+
+class ImageEncoding(Enum):
+    NV12 = "NV12"
+
 
 TensorDType = Union[
     np.uint8,
@@ -53,6 +60,7 @@ DTYPE_MAP: Final[dict[npt.DTypeLike, str]] = {
 class TensorArray(pa.ExtensionArray):  # type: ignore[misc]
     def from_numpy(
         array: npt.NDArray[TensorDType],
+        encoding: ImageEncoding | None = None,
         names: Iterable[str | None] | None = None,
         meaning: bindings.TensorDataMeaning = None,
         meter: float | None = None,
@@ -67,14 +75,14 @@ class TensorArray(pa.ExtensionArray):  # type: ignore[misc]
         shape = pa.array(shape_data, type=TensorType.storage_type["shape"].type)
 
         if array.dtype == np.uint8:
-            data_inner = pa.array([array.flatten().tobytes()], type=pa.binary())
+            data_inner = pa.array([memoryview(array).tobytes()], type=pa.binary())  # type: ignore[arg-type]
         else:
             data_storage = pa.array(array.flatten())
             data_inner = pa.ListArray.from_arrays(pa.array([0, len(data_storage)]), data_storage)
 
         data = build_dense_union(
             TensorType.storage_type["data"].type,
-            discriminant=DTYPE_MAP[cast(TensorDType, array.dtype.type)],
+            discriminant=DTYPE_MAP[cast(TensorDType, array.dtype.type)] if encoding is None else encoding.name,
             child=data_inner,
         )
 
@@ -99,13 +107,7 @@ class TensorArray(pa.ExtensionArray):  # type: ignore[misc]
             meter = pa.array([meter], mask=[False], type=pa.float32())
 
         storage = pa.StructArray.from_arrays(
-            [
-                tensor_id,
-                shape,
-                data,
-                meaning,
-                meter,
-            ],
+            [tensor_id, shape, data, meaning, meter],
             fields=list(TensorType.storage_type),
         ).cast(TensorType.storage_type)
         storage.validate(full=True)

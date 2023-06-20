@@ -3,103 +3,52 @@ use re_log_types::EntityPath;
 
 use super::api::BackendCommChannel;
 use super::ws::WsMessageData;
+use crate::ViewerContext;
 use instant::Instant;
 use std::fmt;
-
 use strum::EnumIter;
 use strum::IntoEnumIterator;
 
-#[derive(serde::Deserialize, serde::Serialize, fmt::Debug, PartialEq, Clone, Copy, EnumIter)]
-#[allow(non_camel_case_types)]
-pub enum ColorCameraResolution {
-    THE_720_P,
-    THE_800_P,
-    THE_1440X1080,
-    THE_1080_P,
-    THE_1200_P,
-    THE_5_MP,
-    THE_4_K,
-    THE_12_MP,
-    THE_4000X3000,
-    THE_13_MP,
-    THE_48_MP,
-}
-
-#[derive(
-    serde::Deserialize,
-    serde::Serialize,
-    fmt::Debug,
-    PartialEq,
-    Eq,
-    Clone,
-    Copy,
-    EnumIter,
-    PartialOrd,
-    Ord,
-)]
-#[allow(non_camel_case_types)]
-pub enum MonoCameraResolution {
-    THE_400_P,
-    THE_720_P,
-    THE_800_P,
-    THE_1200_P,
-}
-
-// fmt::Display is used in UI while fmt::Debug is used with the depthai backend api
-impl fmt::Display for ColorCameraResolution {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::THE_1080_P => write!(f, "1080p"),
-            Self::THE_4_K => write!(f, "4k"),
-            Self::THE_720_P => write!(f, "720p"),
-            Self::THE_800_P => write!(f, "800p"),
-            Self::THE_1200_P => write!(f, "1200p"),
-            Self::THE_5_MP => write!(f, "5MP"),
-            Self::THE_12_MP => write!(f, "12MP"),
-            Self::THE_13_MP => write!(f, "13MP"),
-            Self::THE_4000X3000 => write!(f, "4000x3000"),
-            Self::THE_48_MP => write!(f, "48MP"),
-            Self::THE_1440X1080 => write!(f, "1440x1080"),
-        }
-    }
-}
-
-impl fmt::Display for MonoCameraResolution {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::THE_400_P => write!(f, "400p"),
-            Self::THE_720_P => write!(f, "720p"),
-            Self::THE_800_P => write!(f, "800p"),
-            Self::THE_1200_P => write!(f, "1200p"),
-        }
-    }
-}
-
-#[derive(serde::Deserialize, serde::Serialize, Clone, Copy, PartialEq)]
-pub struct ColorCameraConfig {
+#[derive(serde::Deserialize, serde::Serialize, Clone, PartialEq, Debug)]
+pub struct CameraConfig {
     pub fps: u8,
-    pub resolution: ColorCameraResolution,
-    #[serde(rename = "xout_video")]
+    pub resolution: CameraSensorResolution,
+    pub kind: CameraSensorKind,
+    pub board_socket: CameraBoardSocket,
+    pub name: String,
     pub stream_enabled: bool,
 }
 
-impl Default for ColorCameraConfig {
+impl Default for CameraConfig {
     fn default() -> Self {
         Self {
             fps: 30,
-            resolution: ColorCameraResolution::THE_1080_P,
+            resolution: CameraSensorResolution::THE_1080_P,
+            kind: CameraSensorKind::COLOR,
+            board_socket: CameraBoardSocket::CAM_A,
+            name: String::from("Color"),
             stream_enabled: true,
         }
     }
 }
 
-impl fmt::Debug for ColorCameraConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Color camera config: fps: {}, resolution: {:?}",
-            self.fps, self.resolution
-        )
+impl CameraConfig {
+    pub fn left() -> Self {
+        Self {
+            board_socket: CameraBoardSocket::CAM_B,
+            ..Default::default()
+        }
+    }
+
+    pub fn right() -> Self {
+        Self {
+            board_socket: CameraBoardSocket::CAM_C,
+            ..Default::default()
+        }
+    }
+
+    pub fn is_color_camera(&self) -> bool {
+        self.name == "Color"
     }
 }
 
@@ -121,6 +70,27 @@ pub enum CameraBoardSocket {
     CAM_H,
 }
 
+impl CameraBoardSocket  {
+    pub fn from(socket: String) -> Option<Self> {
+        match socket.as_str() {
+            "AUTO" => Some(CameraBoardSocket::AUTO),
+            "RGB" => Some(CameraBoardSocket::RGB),
+            "LEFT" => Some(CameraBoardSocket::LEFT),
+            "RIGHT" => Some(CameraBoardSocket::RIGHT),
+            "CENTER" => Some(CameraBoardSocket::CENTER),
+            "CAM_A" => Some(CameraBoardSocket::CAM_A),
+            "CAM_B" => Some(CameraBoardSocket::CAM_B),
+            "CAM_C" => Some(CameraBoardSocket::CAM_C),
+            "CAM_D" => Some(CameraBoardSocket::CAM_D),
+            "CAM_E" => Some(CameraBoardSocket::CAM_E),
+            "CAM_F" => Some(CameraBoardSocket::CAM_F),
+            "CAM_G" => Some(CameraBoardSocket::CAM_G),
+            "CAM_H" => Some(CameraBoardSocket::CAM_H),
+            _ => None,
+        }
+    }
+}
+
 impl Default for CameraBoardSocket {
     fn default() -> Self {
         Self::AUTO
@@ -128,54 +98,106 @@ impl Default for CameraBoardSocket {
 }
 
 impl CameraBoardSocket {
-    pub fn depth_align_options() -> Vec<Self> {
-        return vec![Self::RGB, Self::LEFT, Self::RIGHT];
-    }
-}
-
-#[derive(serde::Deserialize, serde::Serialize, Clone, Copy, PartialEq)]
-pub struct MonoCameraConfig {
-    pub fps: u8,
-    pub resolution: MonoCameraResolution,
-    pub board_socket: CameraBoardSocket,
-    #[serde(rename = "xout")]
-    pub stream_enabled: bool,
-}
-
-impl Default for MonoCameraConfig {
-    fn default() -> Self {
-        Self {
-            fps: 30,
-            resolution: MonoCameraResolution::THE_400_P,
-            board_socket: CameraBoardSocket::AUTO,
-            stream_enabled: true,
+    pub fn display_name(&self, ctx: &ViewerContext<'_>) -> String {
+        let camera_features = ctx.depthai_state.get_connected_cameras();
+        if let Some(cam) = camera_features.iter().find(|cam| cam.board_socket == *self) {
+            if !cam.name.is_empty() {
+                return format!("{} ({self:?})", cam.name);
+            }
         }
+        format!("{self:?}")
     }
 }
 
-impl MonoCameraConfig {
-    fn left() -> Self {
-        Self {
-            board_socket: CameraBoardSocket::LEFT,
-            ..Default::default()
-        }
-    }
-
-    fn right() -> Self {
-        Self {
-            board_socket: CameraBoardSocket::RIGHT,
-            ..Default::default()
-        }
-    }
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Debug)]
+#[allow(non_camel_case_types)]
+pub enum ImuKind {
+    SIX_AXIS,
+    NINE_AXIS,
 }
 
-impl fmt::Debug for MonoCameraConfig {
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Debug)]
+#[allow(non_camel_case_types)]
+pub enum CameraSensorResolution {
+    THE_400_P,
+    THE_720_P,
+    THE_800_P,
+    THE_1440X1080,
+    THE_1080_P,
+    THE_1200_P,
+    THE_5_MP,
+    THE_4_K,
+    THE_12_MP,
+    THE_4000X3000,
+    THE_13_MP,
+    THE_48_MP,
+}
+
+// fmt::Display is used in UI while fmt::Debug is used with the depthai backend api
+impl fmt::Display for CameraSensorResolution {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Mono camera config: fps: {}, resolution: {:?}",
-            self.fps, self.resolution
-        )
+        match self {
+            Self::THE_1080_P => write!(f, "1080p"),
+            Self::THE_4_K => write!(f, "4k"),
+            Self::THE_720_P => write!(f, "720p"),
+            Self::THE_800_P => write!(f, "800p"),
+            Self::THE_1200_P => write!(f, "1200p"),
+            Self::THE_5_MP => write!(f, "5MP"),
+            Self::THE_12_MP => write!(f, "12MP"),
+            Self::THE_13_MP => write!(f, "13MP"),
+            Self::THE_4000X3000 => write!(f, "4000x3000"),
+            Self::THE_48_MP => write!(f, "48MP"),
+            Self::THE_1440X1080 => write!(f, "1440x1080"),
+            Self::THE_400_P => write!(f, "400p"),
+            Self::THE_720_P => write!(f, "720p"),
+        }
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Copy, PartialEq, Debug)]
+#[allow(non_camel_case_types)]
+pub enum CameraSensorKind {
+    COLOR,
+    MONO,
+    TOF,
+    THERMAL,
+}
+
+impl Default for CameraSensorKind {
+    fn default() -> Self {
+        Self::COLOR
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
+pub struct CameraFeatures {
+    pub resolutions: Vec<CameraSensorResolution>,
+    pub max_fps: u8,
+    pub board_socket: CameraBoardSocket,
+    pub supported_types: Vec<CameraSensorKind>,
+    pub stereo_pairs: Vec<CameraBoardSocket>, // Which cameras can be paired with this one
+    pub name: String,
+    pub intrinsics: Option<[[f32; 3]; 3]>,
+}
+
+impl CameraFeatures {
+    pub fn is_color_camera(&self) -> bool {
+        self.name == "Color"
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct DeviceProperties {
+    pub id: String,
+    pub cameras: Vec<CameraFeatures>,
+    pub imu: Option<ImuKind>,
+    pub stereo_pairs: Vec<(CameraBoardSocket, CameraBoardSocket)>,
+    pub default_stereo_pair: Option<(CameraBoardSocket, CameraBoardSocket)>,
+}
+
+impl DeviceProperties {
+    pub fn has_stereo_pairs(&self) -> bool {
+        !self.stereo_pairs.is_empty()
     }
 }
 
@@ -226,6 +248,7 @@ pub struct DepthConfig {
     pub sigma: i64,
     pub confidence: i64,
     pub align: CameraBoardSocket,
+    pub stereo_pair: (CameraBoardSocket, CameraBoardSocket),
 }
 
 impl Default for DepthConfig {
@@ -239,6 +262,7 @@ impl Default for DepthConfig {
             sigma: 0,
             confidence: 230,
             align: CameraBoardSocket::RGB,
+            stereo_pair: (CameraBoardSocket::CAM_A, CameraBoardSocket::CAM_C),
         }
     }
 }
@@ -249,19 +273,42 @@ impl DepthConfig {
     }
 
     pub fn only_runtime_configs_differ(&self, other: &DepthConfig) -> bool {
-        self.lr_check == other.lr_check
-            && self.align == other.align
-            && self.extended_disparity == other.extended_disparity
-            && self.subpixel_disparity == other.subpixel_disparity
-            && self != other
+        self.lr_check == other.lr_check &&
+            self.align == other.align &&
+            self.extended_disparity == other.extended_disparity &&
+            self.subpixel_disparity == other.subpixel_disparity &&
+            self != other
+    }
+}
+
+impl From<&DeviceProperties> for Option<DepthConfig> {
+    fn from(props: &DeviceProperties) -> Self {
+        let mut config = DepthConfig::default();
+        let Some(cam_with_stereo_pair) = props.cameras
+            .iter()
+            .find(|feat| !feat.stereo_pairs.is_empty()) else {
+            return None;
+        };
+        if let Some((cam_a, cam_b)) = props.default_stereo_pair {
+            config.stereo_pair = (cam_a, cam_b);
+        } else {
+            let stereo_pair = cam_with_stereo_pair.stereo_pairs[0];
+            config.stereo_pair = (cam_with_stereo_pair.board_socket, stereo_pair);
+        }
+        config.align = if
+            let Some(color_cam) = props.cameras.iter().find(|cam| cam.is_color_camera())
+        {
+            color_cam.board_socket
+        } else {
+            config.stereo_pair.0
+        };
+        Some(config)
     }
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone)]
 pub struct DeviceConfig {
-    pub color_camera: ColorCameraConfig,
-    pub left_camera: Option<MonoCameraConfig>,
-    pub right_camera: Option<MonoCameraConfig>,
+    pub cameras: Vec<CameraConfig>,
     #[serde(default = "bool_true")]
     pub depth_enabled: bool, // Much easier to have an explicit bool for checkbox
     #[serde(default = "DepthConfig::default_as_option")]
@@ -272,13 +319,44 @@ pub struct DeviceConfig {
 impl Default for DeviceConfig {
     fn default() -> Self {
         Self {
-            color_camera: ColorCameraConfig::default(),
-            left_camera: Some(MonoCameraConfig::left()),
-            right_camera: Some(MonoCameraConfig::right()),
+            cameras: Vec::new(),
             depth_enabled: true,
             depth: Some(DepthConfig::default()),
             ai_model: AiModel::default(),
         }
+    }
+}
+
+impl From<&DeviceProperties> for DeviceConfig {
+    fn from(props: &DeviceProperties) -> Self {
+        let mut config = Self::default();
+
+        let has_color_cam = props.cameras.iter().any(|cam| cam.is_color_camera());
+        config.cameras = props.cameras
+            .iter()
+            .map(|cam| CameraConfig {
+                name: cam.name.clone(),
+                fps: 30, // TODO(filip): Do performance improvements to allow higher fps
+                resolution: *cam.resolutions
+                    .iter()
+                    .filter(|res| {
+                        res != &&CameraSensorResolution::THE_4_K &&
+                            res != &&CameraSensorResolution::THE_12_MP
+                    })
+                    .last()
+                    .unwrap_or(&CameraSensorResolution::THE_800_P),
+                board_socket: cam.board_socket,
+                stream_enabled: if has_color_cam {
+                    cam.is_color_camera()
+                } else {
+                    true
+                },
+                kind: *cam.supported_types.first().unwrap(),
+            })
+            .collect();
+        config.depth = Option::<DepthConfig>::from(props);
+        config.ai_model = AiModel::from(props);
+        config
     }
 }
 
@@ -304,22 +382,6 @@ pub struct CameraSensorConfig {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub struct CameraFeatures {
-    configs: Vec<CameraSensorConfig>,
-    #[serde(rename = "hasAutofocus")]
-    has_autofocus: bool,
-    height: i64,
-    name: String,
-    orientation: CameraImageOrientation,
-    #[serde(rename = "sensorName")]
-    sensor_name: String,
-    socket: CameraBoardSocket,
-    #[serde(rename = "supportedTypes")]
-    supported_types: Vec<CameraSensorType>,
-    width: i64,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
 #[allow(non_camel_case_types)]
 pub enum CameraImageOrientation {
     AUTO,
@@ -335,12 +397,10 @@ impl PartialEq for DeviceConfig {
             (Some(a), Some(b)) => a == b,
             _ => true, // If one is None, it's only different if depth_enabled is different
         };
-        self.color_camera == other.color_camera
-            && self.left_camera == other.left_camera
-            && self.right_camera == other.right_camera
-            && depth_eq
-            && self.depth_enabled == other.depth_enabled
-            && self.ai_model == other.ai_model
+        self.cameras == other.cameras &&
+            depth_eq &&
+            self.depth_enabled == other.depth_enabled &&
+            self.ai_model == other.ai_model
     }
 }
 
@@ -361,10 +421,8 @@ impl fmt::Debug for DeviceConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "Device config: {:?} {:?} {:?}, depth: {:?}, ai_model: {:?}, depth_enabled: {:?}",
-            self.color_camera,
-            self.left_camera,
-            self.right_camera,
+            "Device config: cams: {:?}, depth: {:?}, ai_model: {:?}, depth_enabled: {:?}",
+            self.cameras,
             self.depth,
             self.ai_model,
             self.depth_enabled
@@ -391,6 +449,7 @@ pub enum ErrorAction {
     FullReset,
 }
 
+// TODO(filip): Move to a more appropriate place, refactor depthai.rs in general
 #[derive(serde::Deserialize, serde::Serialize, Clone, PartialEq, fmt::Debug)]
 pub struct Error {
     pub action: ErrorAction,
@@ -406,30 +465,16 @@ impl Default for Error {
     }
 }
 
-#[derive(serde::Deserialize, serde::Serialize, Clone, PartialEq, fmt::Debug)]
-pub struct Device {
-    pub id: DeviceId,
-    pub supported_color_resolutions: Vec<ColorCameraResolution>,
-    pub supported_left_mono_resolutions: Vec<MonoCameraResolution>,
-    pub supported_right_mono_resolutions: Vec<MonoCameraResolution>,
-}
-
-// Sensible default for when no device is connected
-impl Default for Device {
-    fn default() -> Self {
-        Self {
-            id: DeviceId::default(),
-            supported_color_resolutions: vec![ColorCameraResolution::THE_1080_P],
-            supported_left_mono_resolutions: vec![MonoCameraResolution::THE_400_P],
-            supported_right_mono_resolutions: vec![MonoCameraResolution::THE_400_P],
-        }
-    }
+#[derive(serde::Deserialize, serde::Serialize, Clone, PartialEq, fmt::Debug, Default)]
+pub struct Info {
+    pub message: String,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, fmt::Debug)]
 pub struct AiModel {
     pub path: String,
     pub display_name: String,
+    pub camera: CameraBoardSocket,
 }
 
 impl Default for AiModel {
@@ -443,13 +488,26 @@ impl AiModel {
         Self {
             path: String::new(),
             display_name: String::from("No model selected"),
+            camera: CameraBoardSocket::CAM_A,
         }
+    }
+}
+
+impl From<&DeviceProperties> for AiModel {
+    fn from(props: &DeviceProperties) -> Self {
+        let mut model = Self::default();
+        if let Some(cam) = props.cameras.iter().find(|cam| cam.is_color_camera()) {
+            model.camera = cam.board_socket;
+        } else if let Some(cam) = props.cameras.first() {
+            model.camera = cam.board_socket;
+        }
+        model
     }
 }
 
 impl PartialEq for AiModel {
     fn eq(&self, other: &Self) -> bool {
-        self.path == other.path
+        self.path == other.path && self.camera == other.camera
     }
 }
 
@@ -458,7 +516,7 @@ pub struct State {
     #[serde(skip)]
     devices_available: Option<Vec<DeviceId>>,
     #[serde(skip)]
-    pub selected_device: Device,
+    pub selected_device: DeviceProperties,
     #[serde(skip)]
     pub applied_device_config: DeviceConfigState,
     #[serde(skip)]
@@ -474,6 +532,8 @@ pub struct State {
     poll_instant: Option<Instant>,
     #[serde(default = "default_neural_networks")]
     pub neural_networks: Vec<AiModel>,
+    #[serde(skip)]
+    update_timeout_timer: Option<Instant>,
 }
 
 #[inline]
@@ -488,19 +548,23 @@ fn default_neural_networks() -> Vec<AiModel> {
         AiModel {
             path: String::from("yolov8n_coco_640x352"),
             display_name: String::from("Yolo V8"),
+            camera: CameraBoardSocket::CAM_A,
         },
         AiModel {
             path: String::from("mobilenet-ssd"),
             display_name: String::from("MobileNet SSD"),
+            camera: CameraBoardSocket::CAM_A,
         },
         AiModel {
             path: String::from("face-detection-retail-0004"),
             display_name: String::from("Face Detection"),
+            camera: CameraBoardSocket::CAM_A,
         },
         AiModel {
             path: String::from("age-gender-recognition-retail-0013"),
             display_name: String::from("Age gender recognition"),
-        },
+            camera: CameraBoardSocket::CAM_A,
+        }
     ]
 }
 
@@ -508,7 +572,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             devices_available: None,
-            selected_device: Device::default(),
+            selected_device: DeviceProperties::default(),
             applied_device_config: DeviceConfigState::default(),
             modified_device_config: DeviceConfig::default(),
             subscriptions: ChannelId::iter().collect(),
@@ -516,13 +580,22 @@ impl Default for State {
             backend_comms: BackendCommChannel::default(),
             poll_instant: Some(Instant::now()), // No default for Instant
             neural_networks: default_neural_networks(),
+            update_timeout_timer: None,
         }
     }
 }
 
 #[repr(u8)]
 #[derive(
-    serde::Serialize, serde::Deserialize, Copy, Clone, PartialEq, Eq, fmt::Debug, Hash, EnumIter,
+    serde::Serialize,
+    serde::Deserialize,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    fmt::Debug,
+    Hash,
+    EnumIter
 )]
 pub enum ChannelId {
     ColorImage,
@@ -533,125 +606,24 @@ pub enum ChannelId {
     ImuData,
 }
 
-/// Entity paths for depthai-viewer space views
-/// !---- These have to match with EntityPath in rerun_py/rerun_sdk/depthai_viewer_backend/sdk_callbacks.py ----!
-pub mod entity_paths {
-    use lazy_static::lazy_static;
-    use re_log_types::EntityPath;
-
-    lazy_static! {
-        pub static ref RGB_PINHOLE_CAMERA: EntityPath = EntityPath::from("color/camera/rgb");
-        pub static ref LEFT_PINHOLE_CAMERA: EntityPath = EntityPath::from("mono/camera/left_mono");
-        pub static ref LEFT_CAMERA_IMAGE: EntityPath =
-            EntityPath::from("mono/camera/left_mono/Left mono");
-        pub static ref RIGHT_PINHOLE_CAMERA: EntityPath =
-            EntityPath::from("mono/camera/right_mono");
-        pub static ref RIGHT_CAMERA_IMAGE: EntityPath =
-            EntityPath::from("mono/camera/right_mono/Right mono");
-        pub static ref RGB_CAMERA_IMAGE: EntityPath =
-            EntityPath::from("color/camera/rgb/Color camera");
-        pub static ref DETECTIONS: EntityPath = EntityPath::from("color/camera/rgb/Detections");
-        pub static ref DETECTION: EntityPath = EntityPath::from("color/camera/rgb/Detection");
-        pub static ref RGB_CAMERA_TRANSFORM: EntityPath = EntityPath::from("color/camera");
-        pub static ref MONO_CAMERA_TRANSFORM: EntityPath = EntityPath::from("mono/camera");
-
-        // --- These are extra for the depthai-viewer ---
-        pub static ref COLOR_CAM_3D: EntityPath = EntityPath::from("color");
-        pub static ref MONO_CAM_3D: EntityPath = EntityPath::from("mono");
-        pub static ref DEPTH_RGB: EntityPath = EntityPath::from("color/camera/rgb/Depth");
-        pub static ref DEPTH_LEFT_MONO: EntityPath =
-            EntityPath::from("mono/camera/left_mono/Depth");
-        pub static ref DEPTH_RIGHT_MONO: EntityPath =
-            EntityPath::from("mono/camera/right_mono/Depth");
-    }
-}
-
 impl State {
     pub fn only_runtime_configs_changed(
         old_config: &DeviceConfig,
-        new_config: &DeviceConfig,
+        new_config: &DeviceConfig
     ) -> bool {
-        let any_runtime_conf_changed = old_config.depth.is_some()
-            && new_config.depth.is_some()
-            && old_config
-                .depth
-                .unwrap()
-                .only_runtime_configs_differ(&new_config.depth.unwrap()); // || others to be added
-        any_runtime_conf_changed
-            && old_config.left_camera == new_config.left_camera
-            && old_config.right_camera == new_config.right_camera
-            && old_config.color_camera == new_config.color_camera
-            && old_config.ai_model == new_config.ai_model
-    }
-
-    /// Get the entities that should be removed based on UI (e.g. if depth is disabled, remove the depth image)
-    pub fn get_entities_to_remove(&mut self) -> Vec<EntityPath> {
-        let mut remove_entities = Vec::new();
-        let Some(applied_device_config) = &self.applied_device_config.config else {
-            return vec![entity_paths::DEPTH_LEFT_MONO.clone(),
-            entity_paths::DEPTH_RIGHT_MONO.clone(),
-            entity_paths::DEPTH_RGB.clone(),
-            entity_paths::MONO_CAM_3D.clone(),
-            entity_paths::MONO_CAMERA_TRANSFORM.clone(),
-            entity_paths::RIGHT_PINHOLE_CAMERA.clone(),
-            entity_paths::RIGHT_CAMERA_IMAGE.clone(),
-            entity_paths::LEFT_PINHOLE_CAMERA.clone(),
-            entity_paths::LEFT_CAMERA_IMAGE.clone(),
-            entity_paths::RGB_PINHOLE_CAMERA.clone(),
-            entity_paths::RGB_CAMERA_IMAGE.clone(),
-            entity_paths::RGB_CAMERA_TRANSFORM.clone(),
-            entity_paths::COLOR_CAM_3D.clone(),
-            entity_paths::DETECTIONS.clone(),
-            entity_paths::DETECTION.clone()]
-        };
-        if applied_device_config.depth.is_none() {
-            remove_entities.push(entity_paths::DEPTH_LEFT_MONO.clone());
-            remove_entities.push(entity_paths::DEPTH_RIGHT_MONO.clone());
-            remove_entities.push(entity_paths::DEPTH_RGB.clone());
-        }
-        if let Some(right_cam) = applied_device_config.right_camera {
-            if !right_cam.stream_enabled {
-                remove_entities.push(entity_paths::RIGHT_PINHOLE_CAMERA.clone());
-                remove_entities.push(entity_paths::RIGHT_CAMERA_IMAGE.clone());
-                if let Some(left_cam) = applied_device_config.left_camera {
-                    if !left_cam.stream_enabled {
-                        remove_entities.push(entity_paths::MONO_CAM_3D.clone());
-                        remove_entities.push(entity_paths::MONO_CAMERA_TRANSFORM.clone());
-                    }
-                } else {
-                    remove_entities.push(entity_paths::LEFT_PINHOLE_CAMERA.clone());
-                    remove_entities.push(entity_paths::LEFT_CAMERA_IMAGE.clone());
-                }
-            }
-        } else {
-            remove_entities.push(entity_paths::RIGHT_PINHOLE_CAMERA.clone());
-            remove_entities.push(entity_paths::RIGHT_CAMERA_IMAGE.clone());
-        }
-        if let Some(left_cam) = applied_device_config.left_camera {
-            if !left_cam.stream_enabled {
-                remove_entities.push(entity_paths::LEFT_PINHOLE_CAMERA.clone());
-                remove_entities.push(entity_paths::LEFT_CAMERA_IMAGE.clone());
-            }
-        }
-        if !applied_device_config.color_camera.stream_enabled {
-            remove_entities.push(entity_paths::RGB_PINHOLE_CAMERA.clone());
-            remove_entities.push(entity_paths::RGB_CAMERA_IMAGE.clone());
-            remove_entities.push(entity_paths::COLOR_CAM_3D.clone());
-            remove_entities.push(entity_paths::RGB_CAMERA_TRANSFORM.clone());
-        }
-        if applied_device_config.ai_model.path.is_empty() {
-            remove_entities.push(entity_paths::DETECTIONS.clone());
-            remove_entities.push(entity_paths::DETECTION.clone());
-        }
-        remove_entities
+        let any_runtime_conf_changed =
+            old_config.depth.is_some() &&
+            new_config.depth.is_some() &&
+            old_config.depth.unwrap().only_runtime_configs_differ(&new_config.depth.unwrap()); // || others to be added
+        any_runtime_conf_changed &&
+            old_config.cameras == new_config.cameras &&
+            old_config.ai_model == new_config.ai_model
     }
 
     pub fn set_subscriptions(&mut self, subscriptions: &Vec<ChannelId>) {
-        if self.subscriptions.len() == subscriptions.len()
-            && self
-                .subscriptions
-                .iter()
-                .all(|channel_id| subscriptions.contains(channel_id))
+        if
+            self.subscriptions.len() == subscriptions.len() &&
+            self.subscriptions.iter().all(|channel_id| subscriptions.contains(channel_id))
         {
             return;
         }
@@ -659,6 +631,7 @@ impl State {
         self.subscriptions = subscriptions.clone();
     }
 
+    /// Returns available devices
     pub fn get_devices(&mut self) -> Vec<DeviceId> {
         // Return stored available devices or fetch them from the api (they get fetched every 30s via poller)
         if let Some(devices) = self.devices_available.clone() {
@@ -667,11 +640,30 @@ impl State {
         Vec::new()
     }
 
+    /// Returns cameras connected to the selected device
+    pub fn get_connected_cameras(&self) -> &Vec<CameraFeatures> {
+        &self.selected_device.cameras
+    }
+
     pub fn shutdown(&mut self) {
         self.backend_comms.shutdown();
     }
 
+    fn set_update_in_progress(&mut self, in_progress: bool) {
+        self.update_timeout_timer = None;
+        if in_progress {
+            self.update_timeout_timer = Some(Instant::now());
+        }
+        self.applied_device_config.update_in_progress = in_progress;
+    }
+
     pub fn update(&mut self) {
+        if let Some(update_timeout) = self.update_timeout_timer {
+            if update_timeout.elapsed().as_secs() > 30 {
+                self.set_update_in_progress(false);
+            }
+        }
+
         if let Some(ws_message) = self.backend_comms.receive() {
             re_log::debug!("Received message: {:?}", ws_message);
             match ws_message.data {
@@ -688,49 +680,62 @@ impl State {
                     if config.depth.is_some() {
                         subs.push(ChannelId::DepthImage);
                     }
-                    if config.color_camera.stream_enabled {
-                        subs.push(ChannelId::ColorImage);
+                    if
+                        let Some(color_camera) = &config.cameras
+                            .iter()
+                            .find(|cam| cam.is_color_camera())
+                    {
+                        if color_camera.stream_enabled {
+                            subs.push(ChannelId::ColorImage);
+                        }
                     }
-                    if let Some(left_cam) = config.left_camera {
+                    if let Some(left_cam) = &config.cameras.iter().find(|cam| cam.name == "left") {
                         if left_cam.stream_enabled {
                             subs.push(ChannelId::LeftMono);
                         }
                     }
-                    if let Some(right_cam) = config.right_camera {
+                    if let Some(right_cam) = &config.cameras.iter().find(|cam| cam.name == "right") {
                         if right_cam.stream_enabled {
                             subs.push(ChannelId::RightMono);
                         }
                     }
                     self.applied_device_config.config = Some(config.clone());
                     self.modified_device_config = config.clone();
-                    let Some(applied_device_config) = self.applied_device_config.config.as_mut() else {
+                    let Some(applied_device_config) =
+                        self.applied_device_config.config.as_mut() else {
                         self.reset();
-                    self.applied_device_config.update_in_progress = false;
-                    return;
+                        self.applied_device_config.update_in_progress = false;
+                        return;
                     };
                     applied_device_config.depth_enabled = config.depth.is_some();
                     self.modified_device_config.depth_enabled =
                         self.modified_device_config.depth.is_some();
                     self.set_subscriptions(&subs);
-                    self.applied_device_config.update_in_progress = false;
+                    self.set_update_in_progress(false);
                 }
-                WsMessageData::Device(device) => {
+                WsMessageData::DeviceProperties(device) => {
                     re_log::debug!("Setting device: {device:?}");
-                    self.selected_device = device;
-                    self.backend_comms.set_subscriptions(&self.subscriptions);
-                    // self.backend_comms
-                    //     .set_pipeline(&self.applied_device_config.config, false);
-                    self.applied_device_config.update_in_progress = false;
+                    self.set_device(device);
+                    if !self.selected_device.id.is_empty() {
+                        // Apply default pipeline
+                        self.set_pipeline(&mut self.modified_device_config.clone(), false);
+                    }
                 }
                 WsMessageData::Error(error) => {
                     re_log::error!("Error: {:}", error.message);
-                    self.applied_device_config.update_in_progress = false;
+                    self.set_update_in_progress(false);
                     match error.action {
                         ErrorAction::None => (),
                         ErrorAction::FullReset => {
-                            self.set_device(String::new());
+                            self.select_device(String::new());
                         }
                     }
+                }
+                WsMessageData::Info(info) => {
+                    if info.message.is_empty() {
+                        return;
+                    }
+                    re_log::info!("{}", info.message);
                 }
             }
         }
@@ -748,43 +753,33 @@ impl State {
         }
     }
 
-    pub fn set_device(&mut self, device_id: DeviceId) {
-        re_log::debug!("Setting device: {:?}", device_id);
-        self.applied_device_config.config = None;
-        self.backend_comms.set_device(device_id);
-        self.applied_device_config.update_in_progress = true;
+    fn set_device(&mut self, device_properties: DeviceProperties) {
+        self.selected_device = device_properties;
+        self.backend_comms.set_subscriptions(&self.subscriptions);
+        self.modified_device_config = DeviceConfig::from(&self.selected_device);
+        self.set_update_in_progress(false);
     }
 
-    pub fn set_device_config(&mut self, config: &mut DeviceConfig, runtime_only: bool) {
-        // Don't try to set pipeline in ws not connected
-        if !self
-            .backend_comms
-            .ws
-            .connected
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
+    pub fn select_device(&mut self, device_id: DeviceId) {
+        re_log::debug!("Setting device: {:?}", device_id);
+        self.applied_device_config.config = None;
+        self.backend_comms.select_device(device_id);
+        self.set_update_in_progress(true);
+    }
+
+    pub fn set_pipeline(&mut self, config: &mut DeviceConfig, runtime_only: bool) {
+        // Don't try to set pipeline if ws isn't connected
+        if !self.backend_comms.ws.is_connected() {
             return;
         }
         if !config.depth_enabled {
             config.depth = None;
         }
 
-        if self
-            .selected_device
-            .supported_left_mono_resolutions
-            .is_empty()
-        {
-            config.left_camera = None;
+        if !self.selected_device.has_stereo_pairs() {
             config.depth = None;
         }
-        if self
-            .selected_device
-            .supported_right_mono_resolutions
-            .is_empty()
-        {
-            config.right_camera = None;
-            config.depth = None;
-        }
+
         if self.selected_device.id.is_empty() {
             self.applied_device_config.config = Some(config.clone());
             return;
@@ -792,9 +787,9 @@ impl State {
         self.backend_comms.set_pipeline(config, runtime_only);
         if runtime_only {
             self.applied_device_config.config = Some(config.clone());
-            self.applied_device_config.update_in_progress = false;
+            self.set_update_in_progress(false);
         } else {
-            self.applied_device_config.update_in_progress = true;
+            self.set_update_in_progress(true);
         }
     }
 

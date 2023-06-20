@@ -2,11 +2,10 @@
 
 ![Screenshot from 2023-05-20 00-22-36](https://github.com/luxonis/depthai-viewer/assets/59307111/605bdf38-1bb4-416d-9643-0da1a511d58e)
 
-
 ## Install
 
 ```sh
-python3 -m pip install depthai-viewer
+python3 -m pip install depthai-viewer --extra-index-url https://test.pypi.org/simple -U
 ```
 
 ## Run

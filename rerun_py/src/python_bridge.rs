@@ -180,6 +180,7 @@ fn depthai_viewer_bindings(py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(log_image_file, m)?)?;
     m.add_function(wrap_pyfunction!(log_cleared, m)?)?;
     m.add_function(wrap_pyfunction!(log_arrow_msg, m)?)?;
+    m.add_function(wrap_pyfunction!(version, m)?)?;
 
     Ok(())
 }
@@ -249,9 +250,9 @@ fn time(timeless: bool) -> TimePoint {
 // ----------------------------------------------------------------------------
 
 #[pyfunction]
-fn main(py: Python<'_>, argv: Vec<String>, sys_exe: String) -> PyResult<u8> {
+fn main(py: Python<'_>, argv: Vec<String>, sys_exe: String, venv_site: String) -> PyResult<u8> {
     let build_info = re_build_info::build_info!();
-    let call_src = depthai_viewer::CallSource::Python(python_version(py), sys_exe);
+    let call_src = depthai_viewer::CallSource::Python(python_version(py), sys_exe, venv_site);
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -313,6 +314,11 @@ fn connect(addr: Option<String>) -> PyResult<()> {
     };
     python_session().connect(addr);
     Ok(())
+}
+
+#[pyfunction]
+fn version() -> PyResult<String> {
+    Ok(python_session().version())
 }
 
 #[must_use = "the tokio_runtime guard must be kept alive while using tokio"]
