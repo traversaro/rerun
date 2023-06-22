@@ -18,7 +18,8 @@ use crate::{
     allocator::create_and_fill_uniform_buffer_batch,
     draw_phases::{ DrawPhase, OutlineMaskProcessor },
     include_shader_module,
-    resource_managers::{ GpuTexture2D, ResourceManagerError },
+    resource_managers::{GpuTexture2D, ResourceManagerError},
+    texture_info,
     view_builder::ViewBuilder,
     wgpu_resources::{
         BindGroupDesc,
@@ -36,27 +37,20 @@ use crate::{
     OutlineMaskPreference,
     PickingLayerObjectId,
     PickingLayerProcessor,
-    texture_info,
 };
 
 use super::{
-    DrawData,
-    FileResolver,
-    FileSystem,
-    RenderContext,
-    Renderer,
-    SharedRendererData,
-    WgpuResourcePools,
-    ColormappedTexture,
+    ColormappedTexture, DrawData, FileResolver, FileSystem, RenderContext, Renderer,
+    SharedRendererData, WgpuResourcePools,
 };
 
 // ---
 mod gpu_data {
     use crate::{
-        wgpu_buffer_types::{ self, U32RowPadded },
-        PickingLayerObjectId,
         renderer::TextureEncoding,
         texture_info,
+        wgpu_buffer_types::{self, U32RowPadded},
+        PickingLayerObjectId,
     };
 
     // Keep in sync with mirror in depth_cloud.wgsl
@@ -111,7 +105,7 @@ mod gpu_data {
         pub fn from_depth_cloud(
             radius_boost_in_ui_points: f32,
             depth_cloud: &super::DepthCloud,
-            device_features: wgpu::Features
+            device_features: wgpu::Features,
         ) -> Self {
             let super::DepthCloud {
                 world_from_obj,
@@ -130,43 +124,33 @@ mod gpu_data {
             let albedo_sample_type = match albedo_texture {
                 Some(colormapped_texture) => {
                     match colormapped_texture.texture.format().sample_type(None) {
-                        Some(wgpu::TextureSampleType::Float { .. }) =>
-                            match colormapped_texture.encoding {
-                                Some(TextureEncoding::Nv12) => SAMPLE_TYPE_NV12,
-                                _ => {
-                                    if
-                                        texture_info::is_float_filterable(
-                                            colormapped_texture.texture.format(),
-                                            device_features
-                                        )
-                                    {
-                                        SAMPLE_TYPE_FLOAT_FILTER
-                                    } else {
-                                        SAMPLE_TYPE_FLOAT_NOFILTER
-                                    }
-                                }
-                            }
-                        Some(wgpu::TextureSampleType::Uint) => {
-                            match colormapped_texture.encoding {
-                                Some(TextureEncoding::Nv12) => SAMPLE_TYPE_NV12,
-                                _ => SAMPLE_TYPE_UINT_NOFILTER,
+                        Some(wgpu::TextureSampleType::Float { .. }) => {
+                            if texture_info::is_float_filterable(
+                                colormapped_texture.texture.format(),
+                                device_features,
+                            ) {
+                                SAMPLE_TYPE_FLOAT_FILTER
+                            } else {
+                                SAMPLE_TYPE_FLOAT_NOFILTER
                             }
                         }
+                        Some(wgpu::TextureSampleType::Uint) => match colormapped_texture.encoding {
+                            Some(TextureEncoding::Nv12) => SAMPLE_TYPE_NV12,
+                            _ => SAMPLE_TYPE_UINT_NOFILTER,
+                        },
                         Some(wgpu::TextureSampleType::Sint) => SAMPLE_TYPE_SINT_NOFILTER,
                         _ => 0,
                     }
                 }
-                _ => { 0 }
+                _ => 0,
             };
 
             let depth_sample_type = match depth_texture.texture.format().sample_type(None) {
                 Some(wgpu::TextureSampleType::Float { .. }) => {
-                    if
-                        texture_info::is_float_filterable(
-                            depth_texture.texture.format(),
-                            device_features
-                        )
-                    {
+                    if texture_info::is_float_filterable(
+                        depth_texture.texture.format(),
+                        device_features,
+                    ) {
                         SAMPLE_TYPE_FLOAT_FILTER
                     } else {
                         SAMPLE_TYPE_FLOAT_NOFILTER
@@ -291,9 +275,11 @@ pub enum DepthCloudDrawDataError {
         "Depth texture format was {0:?}, only formats with sample type float are supported"
     )] InvalidDepthTextureFormat(wgpu::TextureFormat),
 
-    #[error("Invalid albedo texture format {0:?}")] InvalidAlbedoTextureFormat(wgpu::TextureFormat),
+    #[error("Invalid albedo texture format {0:?}")]
+    InvalidAlbedoTextureFormat(wgpu::TextureFormat),
 
-    #[error(transparent)] ResourceManagerError(#[from] ResourceManagerError),
+    #[error(transparent)]
+    ResourceManagerError(#[from] ResourceManagerError),
 }
 
 impl DepthCloudDrawData {
@@ -324,24 +310,20 @@ impl DepthCloudDrawData {
         let depth_cloud_ubo_binding_outlines = create_and_fill_uniform_buffer_batch(
             ctx,
             "depth_cloud_ubos".into(),
-            depth_clouds
-                .iter()
-                .map(|dc| {
-                    gpu_data::DepthCloudInfoUBO::from_depth_cloud(
-                        *radius_boost_in_ui_points_for_outlines,
-                        dc,
-                        ctx.device.features()
-                    )
-                })
+            depth_clouds.iter().map(|dc| {
+                gpu_data::DepthCloudInfoUBO::from_depth_cloud(
+                    *radius_boost_in_ui_points_for_outlines,
+                    dc,
+                    ctx.device.features(),
+                )
+            }),
         );
         let depth_cloud_ubo_binding_opaque = create_and_fill_uniform_buffer_batch(
             ctx,
             "depth_cloud_ubos".into(),
-            depth_clouds
-                .iter()
-                .map(|dc|
-                    gpu_data::DepthCloudInfoUBO::from_depth_cloud(0.0, dc, ctx.device.features())
-                )
+            depth_clouds.iter().map(|dc| {
+                gpu_data::DepthCloudInfoUBO::from_depth_cloud(0.0, dc, ctx.device.features())
+            }),
         );
 
         let mut instances = Vec::with_capacity(depth_clouds.len());
@@ -370,20 +352,21 @@ impl DepthCloudDrawData {
                     depth_texture_uint = depth_texture.handle;
                 }
                 _ => {
-                    return Err(
-                        DepthCloudDrawDataError::InvalidDepthTextureFormat(depth_texture_format)
-                    );
+                    return Err(DepthCloudDrawDataError::InvalidDepthTextureFormat(
+                        depth_texture_format,
+                    ));
                 }
             }
-            if
-                let Some(albedo_texture) = depth_cloud.albedo_texture
-                    .as_ref()
-                    .and_then(|t| Some(&t.texture))
+            if let Some(albedo_texture) = depth_cloud
+                .albedo_texture
+                .as_ref()
+                .and_then(|t| Some(&t.texture))
             {
                 let texture_format = albedo_texture.creation_desc.format;
                 match texture_format.sample_type(None) {
                     Some(wgpu::TextureSampleType::Float { .. }) => {
-                        if texture_info::is_float_filterable(texture_format, ctx.device.features()) {
+                        if texture_info::is_float_filterable(texture_format, ctx.device.features())
+                        {
                             albedo_texture_float_filterable = albedo_texture.handle;
                         } else {
                             albedo_texture_float_nofilter = albedo_texture.handle;
@@ -396,9 +379,9 @@ impl DepthCloudDrawData {
                         albedo_texture_uint = albedo_texture.handle;
                     }
                     _ => {
-                        return Err(
-                            DepthCloudDrawDataError::InvalidAlbedoTextureFormat(texture_format)
-                        );
+                        return Err(DepthCloudDrawDataError::InvalidAlbedoTextureFormat(
+                            texture_format,
+                        ));
                     }
                 }
             }
@@ -538,7 +521,7 @@ impl Renderer for DepthCloudRenderer {
                             multisampled: false,
                         },
                         count: None,
-                    }
+                    },
                 ],
             })
         );

@@ -27,16 +27,15 @@ class DepthaiViewerBack:
     # Queues for communicating with the API process
     action_queue: Queue  # type: ignore[type-arg]
     result_queue: Queue  # type: ignore[type-arg]
-    send_message_queue: Queue  # type: ignore[type-arg]
 
     def __init__(self) -> None:
         self.action_queue = Queue()
         self.result_queue = Queue()
-        self.send_message_queue = Queue()
 
         self.store = Store()
         self.api_process = threading.Thread(
-            target=start_api, args=(self.action_queue, self.result_queue, self.send_message_queue)
+            target=start_api,
+            args=(self.action_queue, self.result_queue, self.store._send_message_queue),  # This is a bit ugly
         )
         self.api_process.start()
         self.run()
@@ -73,10 +72,10 @@ class DepthaiViewerBack:
         except RuntimeError as e:
             print("Failed to get device properties:", e)
             self.on_reset()
-            self.send_message_queue.put(ErrorMessage("Device disconnected!"))
+            self.store.send_message_to_frontend(ErrorMessage("Device disconnected!"))
             print("Restarting backend...")
             # For now exit the backend, the frontend will restart it
-            # (TODO(filip): Why does "Device already closed or disconnected: Input/output error happen")
+            # TODO(filip): Why does "Device already closed or disconnected: Input/output error happen"
             exit(-1)
 
     def on_update_pipeline(self, runtime_only: bool) -> Message:
@@ -84,9 +83,7 @@ class DepthaiViewerBack:
             print("No device selected, can't update pipeline!")
             return ErrorMessage("No device selected, can't update pipeline!")
         print("Updating pipeline...")
-        message: Message = ErrorMessage("Couldn't update pipeline")
-        if self.store.pipeline_config is not None:
-            message = self._device.update_pipeline(self.store.pipeline_config, runtime_only)
+        message = self._device.update_pipeline(runtime_only)
         if isinstance(message, InfoMessage):
             return PipelineMessage(self.store.pipeline_config)
         return message
@@ -134,10 +131,16 @@ class DepthaiViewerBack:
                 pass
 
             if self._device:
-                self._device.update()
+                try:
+                    self._device.update()
+                except Exception as e:
+                    print("Error while updating device:", e)
+                    self.store.send_message_to_frontend(ErrorMessage("Depthai error: " + str(e)))
+                    self.on_reset()
+                    continue
                 if self._device.is_closed():
                     self.on_reset()
-                    self.send_message_queue.put(ErrorMessage("Device disconnected"))
+                    self.store.send_message_to_frontend(ErrorMessage("Device disconnected"))
 
 
 if __name__ == "__main__":

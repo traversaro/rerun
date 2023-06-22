@@ -92,7 +92,6 @@ async def ws_api(websocket: WebSocketServerProtocol) -> None:
             if not message_type:
                 print("Missing message type")
                 continue
-            print("Got message: ", message)
 
             if message_type == MessageType.SUBSCRIPTIONS:
                 data = message.get("data", {})
@@ -113,9 +112,7 @@ async def ws_api(websocket: WebSocketServerProtocol) -> None:
             elif message_type == MessageType.DEVICES:
                 await send_message(
                     websocket,
-                    DevicesMessage(
-                        [d.getMxId() for d in dai.Device.getAllAvailableDevices()]
-                    ),  # type: ignore[call-arg]
+                    DevicesMessage(dai.Device.getAllAvailableDevices()),  # type: ignore[call-arg]
                 )
 
             elif message_type == MessageType.DEVICE:
@@ -133,6 +130,7 @@ async def ws_api(websocket: WebSocketServerProtocol) -> None:
         message_to_send = None
         try:
             message_to_send = send_message_queue.get(timeout=0.01)
+            print("Got message to send: ", message_to_send)
         except QueueEmptyException:
             pass
         if message_to_send:

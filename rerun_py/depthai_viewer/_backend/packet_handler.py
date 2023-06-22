@@ -14,7 +14,6 @@ from depthai_sdk.classes.packets import (  # PointcloudPacket,
 )
 from numpy.typing import NDArray
 from pydantic import BaseModel
-from turbojpeg import TJFLAG_FASTDCT, TJFLAG_FASTUPSAMPLE, TurboJPEG
 
 import depthai_viewer as viewer
 from depthai_viewer._backend.device_configuration import CameraConfiguration
@@ -46,13 +45,13 @@ class AiModelCallbackArgs(CallbackArgs):  # type: ignore[misc]
 
 class SyncedCallbackArgs(BaseModel):  # type: ignore[misc]
     depth_args: Optional[DepthCallbackArgs] = None
+    ai_args: Optional[AiModelCallbackArgs] = None
 
 
 class PacketHandler:
     store: Store
     _ahrs: Mahony
     _get_camera_intrinsics: Callable[[dai.CameraBoardSocket, int, int], NDArray[np.float32]]
-    _jpeg_decoder: TurboJPEG = TurboJPEG()
 
     def __init__(
         self, store: Store, intrinsics_getter: Callable[[dai.CameraBoardSocket, int, int], NDArray[np.float32]]
@@ -89,6 +88,14 @@ class PacketHandler:
                 if args.depth_args is None:
                     continue
                 self._on_stereo_frame(packet, args.depth_args)
+            elif type(packet) is DetectionPacket:
+                if args.ai_args is None:
+                    continue
+                self._on_detections(packet, args.ai_args)
+            elif type(packet) is TwoStagePacket:
+                if args.ai_args is None:
+                    continue
+                self._on_age_gender_packet(packet, args.ai_args)
 
     def build_callback(
         self, args: Union[dai.CameraBoardSocket, DepthCallbackArgs, AiModelCallbackArgs]
@@ -105,8 +112,16 @@ class PacketHandler:
         raise ValueError(f"Unknown callback args type: {type(args)}")
 
     def _on_camera_frame(self, packet: FramePacket, board_socket: dai.CameraBoardSocket) -> None:
-        viewer.log_rigid3(f"{board_socket.name}/transform", child_from_parent=([0, 0, 0], self._ahrs.Q), xyz="RDF")
+        viewer.log_rigid3(
+            f"{board_socket.name}/transform", child_from_parent=([0, 0, 0], [1, 0, 0, 0]), xyz="RDF"
+        )  # TODO(filip): Enable the user to lock the camera rotation in the UI
+
+        img_frame = packet.frame if packet.msg.getType() == dai.RawImgFrame.Type.RAW8 else packet.msg.getData()
         h, w = packet.msg.getHeight(), packet.msg.getWidth()
+        if packet.msg.getType() == dai.ImgFrame.Type.BITSTREAM:
+            img_frame = cv2.cvtColor(cv2.imdecode(img_frame, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB)
+            h, w = img_frame.shape[:2]
+
         child_from_parent: NDArray[np.float32]
         try:
             child_from_parent = self._get_camera_intrinsics(  # type: ignore[call-arg, misc, arg-type]
@@ -122,12 +137,7 @@ class PacketHandler:
             width=w,
             height=h,
         )
-        img_frame = packet.frame if packet.msg.getType() == dai.RawImgFrame.Type.RAW8 else packet.msg.getData()
         entity_path = f"{board_socket.name}/transform/{cam}/Image"
-        if packet.msg.getType() == dai.ImgFrame.Type.BITSTREAM:
-            img_frame = cv2.cvtColor(
-                self._jpeg_decoder.decode(img_frame, flags=TJFLAG_FASTUPSAMPLE | TJFLAG_FASTDCT), cv2.COLOR_BGR2RGB
-            )
 
         if packet.msg.getType() == dai.RawImgFrame.Type.NV12:
             viewer.log_encoded_image(
@@ -180,7 +190,7 @@ class PacketHandler:
         colors = []
         labels = []
         for detection in packet.detections:
-            rects.append(self._rect_from_detection(detection))
+            rects.append(self._rect_from_detection(detection, packet.frame.shape[0], packet.frame.shape[1]))
             colors.append([0, 255, 0])
             label: str = detection.label
             # Open model zoo models output label index
@@ -202,16 +212,18 @@ class PacketHandler:
             cam = cam_kind_from_sensor_kind(args.camera.kind)
             viewer.log_rect(
                 f"{args.camera.board_socket.name}/transform/{cam}/Detection",
-                self._rect_from_detection(det),
+                self._rect_from_detection(det, packet.frame.shape[0], packet.frame.shape[1]),
                 rect_format=RectFormat.XYXY,
                 color=color,
                 label=label,
             )
 
-    def _rect_from_detection(self, detection: _Detection) -> List[int]:
+    def _rect_from_detection(self, detection: _Detection, max_height: int, max_width: int) -> List[int]:
         return [
-            *detection.bottom_right,
-            *detection.top_left,
+            max(min(detection.bottom_right[0], max_width), 0),
+            max(min(detection.bottom_right[1], max_height), 0),
+            max(min(detection.top_left[0], max_width), 0),
+            max(min(detection.top_left[1], max_height), 0),
         ]
 
 

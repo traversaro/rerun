@@ -1,11 +1,15 @@
 import itertools
 import time
+from queue import Queue
 from typing import Dict, List, Optional, Tuple
 
 import depthai as dai
 import numpy as np
 from depthai_sdk import OakCamera
 from depthai_sdk.components import CameraComponent, NNComponent, StereoComponent
+from depthai_sdk.components.camera_helper import (
+    getClosestIspScale,
+)
 from numpy.typing import NDArray
 
 import depthai_viewer as viewer
@@ -13,14 +17,22 @@ from depthai_viewer._backend import classification_labels
 from depthai_viewer._backend.device_configuration import (
     CameraConfiguration,
     CameraFeatures,
+    DeviceInfo,
     DeviceProperties,
     ImuKind,
     PipelineConfiguration,
+    XLinkConnection,
     calculate_isp_scale,
     compare_dai_camera_configs,
-    resolution_to_enum,
+    get_size_from_resolution,
+    size_to_resolution,
 )
-from depthai_viewer._backend.messages import ErrorMessage, InfoMessage, Message
+from depthai_viewer._backend.messages import (
+    ErrorMessage,
+    InfoMessage,
+    Message,
+    WarningMessage,
+)
 from depthai_viewer._backend.packet_handler import (
     AiModelCallbackArgs,
     DepthCallbackArgs,
@@ -67,6 +79,8 @@ class Device:
     _stereo: StereoComponent = None
     _nnet: NNComponent = None
     _xlink_statistics: Optional[XlinkStatistics] = None
+    _sys_info_q: Optional[Queue] = None  # type: ignore[type-arg]
+    _pipeline_start_t: Optional[float] = None
 
     # _profiler = cProfile.Profile()
 
@@ -148,7 +162,15 @@ class Device:
         connected_cam_features = self._oak.device.getConnectedCameraFeatures()
         imu = self._oak.device.getConnectedIMU()
         imu = ImuKind.NINE_AXIS if "BNO" in imu else None if imu == "NONE" else ImuKind.SIX_AXIS
-        device_properties = DeviceProperties(id=self.id, imu=imu)
+        device_info = self._oak.device.getDeviceInfo()
+        device_info = DeviceInfo(
+            name=device_info.name,
+            connection=XLinkConnection.POE
+            if device_info.protocol == dai.XLinkProtocol.X_LINK_TCP_IP
+            else XLinkConnection.USB,
+            mxid=device_info.mxid,
+        )
+        device_properties = DeviceProperties(id=self.id, imu=imu, info=device_info)
         try:
             calib = self._oak.device.readCalibration2()
             left_cam = calib.getStereoLeftCameraId()
@@ -156,17 +178,28 @@ class Device:
             device_properties.default_stereo_pair = (left_cam, right_cam)
         except RuntimeError:
             pass
+
+        ordered_resolutions = list(sorted(size_to_resolution.keys(), key=lambda res: res[0] * res[1]))
         for cam in connected_cam_features:
             prioritized_type = cam.supportedTypes[0]
+            biggest_width, biggest_height = [
+                (conf.width, conf.height) for conf in cam.configs[::-1] if conf.type == prioritized_type
+            ][
+                0
+            ]  # Only support the prioritized type for now
+
+            all_supported_resolutions = [
+                size_to_resolution[(w, h)]
+                for w, h in ordered_resolutions
+                if (w * h) <= (biggest_height * biggest_width)
+            ]
+
+            # Fill in lower resolutions that can be achieved with ISP scaling
             device_properties.cameras.append(
                 CameraFeatures(
                     board_socket=cam.socket,
                     max_fps=60,
-                    resolutions=[
-                        resolution_to_enum[(conf.width, conf.height)]
-                        for conf in cam.configs
-                        if conf.type == prioritized_type  # Only support the prioritized type for now
-                    ],
+                    resolutions=all_supported_resolutions,
                     supported_types=cam.supportedTypes,
                     stereo_pairs=self._get_possible_stereo_pairs_for_cam(cam, connected_cam_features),
                     name=cam.name.capitalize(),
@@ -226,9 +259,14 @@ class Device:
             return None
         return camera[0]
 
-    def update_pipeline(self, config: PipelineConfiguration, runtime_only: bool) -> Message:
+    def update_pipeline(self, runtime_only: bool) -> Message:
         if self._oak is None:
             return ErrorMessage("No device selected, can't update pipeline!")
+
+        config = self.store.pipeline_config
+        if config is None:
+            return ErrorMessage("No pipeline config, can't update pipeline!")
+
         if self._oak.device.isPipelineRunning():
             if runtime_only:
                 if config.depth is not None:
@@ -244,6 +282,9 @@ class Device:
         self._cameras = []
         self._stereo = None
         self._packet_handler.reset()
+        self._sys_info_q = None
+        self._pipeline_start_t = None
+
         synced_outputs = []
         synced_callback_args = SyncedCallbackArgs()
 
@@ -251,29 +292,67 @@ class Device:
         print("Usb speed: ", self._oak.device.getUsbSpeed())
         is_usb2 = self._oak.device.getUsbSpeed() == dai.UsbSpeed.HIGH
         if is_poe:
+            self.store.send_message_to_frontend(
+                WarningMessage("Device is connected via PoE. This may cause performance issues.")
+            )
             print("Connected to a PoE device, camera streams will be JPEG encoded...")
         elif is_usb2:
+            self.store.send_message_to_frontend(
+                WarningMessage("Device is connected in USB2 mode. This may cause performance issues.")
+            )
             print("Device is connected in USB2 mode, camera streams will be JPEG encoded...")
         self.use_encoding = is_poe or is_usb2
+
+        connected_camera_features = self._oak.device.getConnectedCameraFeatures()
         for cam in config.cameras:
             print("Creating camera: ", cam)
+
+            camera_features = next(filter(lambda feat: feat.socket == cam.board_socket, connected_camera_features))
+
+            # When the resolution is too small, the ISP needs to scale it down
+            res_x, res_y = get_size_from_resolution(cam.resolution)
+
+            does_sensor_support_resolution = any(
+                [
+                    config.width == res_x and config.height == res_y
+                    for config in camera_features.configs
+                    if config.type == camera_features.supportedTypes[0]
+                ]
+            )
+
+            # In case of ISP scaling, don't change the sensor resolution in the pipeline config
+            # to keep it logical for the user in the UI
+            sensor_resolution = cam.resolution
+            if not does_sensor_support_resolution:
+                smallest_supported_resolution = [
+                    config for config in camera_features.configs if config.type == camera_features.supportedTypes[0]
+                ][0]
+                sensor_resolution = size_to_resolution[
+                    smallest_supported_resolution.width, smallest_supported_resolution.height
+                ]
+
             sdk_cam = self._oak.create_camera(
                 cam.board_socket,
-                cam.resolution.as_sdk_resolution(),
+                sensor_resolution.as_sdk_resolution(),
                 cam.fps,
                 encode=self.use_encoding,
                 name=cam.name.capitalize(),
             )
-            if cam.stream_enabled:
-                if config.depth and (
-                    cam.board_socket == config.depth.align or cam.board_socket in config.depth.stereo_pair
-                ):
-                    synced_outputs.append(sdk_cam.out.main)
-                else:
-                    self._oak.callback(
-                        sdk_cam,
-                        self._packet_handler.build_callback(cam.board_socket),
+            if not does_sensor_support_resolution:
+                sdk_cam.config_color_camera(
+                    isp_scale=getClosestIspScale(
+                        (smallest_supported_resolution.width, smallest_supported_resolution.height), res_x
                     )
+                )
+
+            is_used_by_depth = config.depth is not None and (
+                cam.board_socket == config.depth.align or cam.board_socket in config.depth.stereo_pair
+            )
+            is_used_by_ai = config.ai_model is not None and cam.board_socket == config.ai_model.camera
+            cam.stream_enabled |= is_used_by_depth or is_used_by_ai
+
+            if cam.stream_enabled:
+                synced_outputs.append(sdk_cam.out.main)
             self._cameras.append(sdk_cam)
 
         if config.depth:
@@ -292,7 +371,6 @@ class Device:
                 right_cam.config_color_camera(isp_scale=calculate_isp_scale(right_cam.node.getResolutionWidth()))
             self._stereo = self._oak.create_stereo(left=left_cam, right=right_cam, name="depth")
 
-            # We used to be able to pass in the board socket to align to, but this was removed in depthai 1.10.0
             align_component = self._get_component_by_socket(config.depth.align)
             if not align_component:
                 return ErrorMessage(f"{config.depth.align} is not configured. Couldn't create stereo pair.")
@@ -345,14 +423,20 @@ class Device:
             if not camera:
                 return ErrorMessage(f"{config.ai_model.camera} is not configured. Couldn't create NN.")
 
-            self._oak.callback(
-                self._nnet,
-                self._packet_handler.build_callback(
-                    AiModelCallbackArgs(model_name=config.ai_model.path, camera=camera, labels=labels)
-                ),
+            synced_callback_args.ai_args = AiModelCallbackArgs(
+                model_name=config.ai_model.path, camera=camera, labels=labels
             )
+            synced_outputs.append(self._nnet.out.main)
+
         if synced_outputs:
             self._oak.sync(synced_outputs, self._packet_handler.build_sync_callback(synced_callback_args))
+
+        sys_logger_xlink = self._oak.pipeline.createXLinkOut()
+        logger = self._oak.pipeline.createSystemLogger()
+        logger.setRate(0.1)
+        sys_logger_xlink.setStreamName("sys_logger")
+        logger.out.link(sys_logger_xlink.input)
+
         try:
             self._oak.start(blocking=False)
         except RuntimeError as e:
@@ -361,6 +445,9 @@ class Device:
 
         running = self._oak.running()
         if running:
+            self._pipeline_start_t = time.time()
+            self._sys_info_q = self._oak.device.getOutputQueue("sys_logger", 1, False)
+            self.store.set_pipeline_config(config)  # We might have modified the config, so store it
             try:
                 self._oak.poll()
             except RuntimeError:
@@ -378,9 +465,66 @@ class Device:
         if self._xlink_statistics is not None:
             self._xlink_statistics.update()
 
+        if self._sys_info_q is None:
+            return
+        sys_info = self._sys_info_q.tryGet()  # type: ignore[attr-defined]
+        if sys_info is not None and self._pipeline_start_t is not None:
+            print("----------------------------------------")
+            print(f"[{int(time.time() - self._pipeline_start_t)}s] System information")
+            print("----------------------------------------")
+            print_system_information(sys_info)
         # if time.time() - self.start > 10:
         #     print("Dumping profiling data")
         #     self._profiler.dump_stats("profile.prof")
         #     self._profiler.disable()
         #     self._profiler.enable()
         #     self.start = time.time()
+
+
+def print_system_information(info: dai.SystemInformation) -> None:
+    print(
+        "Ddr used / total - %.2f / %.2f MiB"
+        % (
+            info.ddrMemoryUsage.used / (1024.0 * 1024.0),
+            info.ddrMemoryUsage.total / (1024.0 * 1024.0),
+        )
+    )
+    print(
+        "Cmx used / total - %.2f / %.2f MiB"
+        % (
+            info.cmxMemoryUsage.used / (1024.0 * 1024.0),
+            info.cmxMemoryUsage.total / (1024.0 * 1024.0),
+        )
+    )
+    print(
+        "LeonCss heap used / total - %.2f / %.2f MiB"
+        % (
+            info.leonCssMemoryUsage.used / (1024.0 * 1024.0),
+            info.leonCssMemoryUsage.total / (1024.0 * 1024.0),
+        )
+    )
+    print(
+        "LeonMss heap used / total - %.2f / %.2f MiB"
+        % (
+            info.leonMssMemoryUsage.used / (1024.0 * 1024.0),
+            info.leonMssMemoryUsage.total / (1024.0 * 1024.0),
+        )
+    )
+    t = info.chipTemperature
+    print(
+        "Chip temperature - average: %.2f, css: %.2f, mss: %.2f, upa: %.2f, dss: %.2f"
+        % (
+            t.average,
+            t.css,
+            t.mss,
+            t.upa,
+            t.dss,
+        )
+    )
+    print(
+        "Cpu usage - Leon CSS: %.2f %%, Leon MSS: %.2f %%"
+        % (
+            info.leonCssCpuUsage.average * 100,
+            info.leonMssCpuUsage.average * 100,
+        )
+    )

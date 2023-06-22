@@ -2,6 +2,8 @@ import json
 from enum import Enum
 from typing import List, Optional
 
+import depthai as dai
+
 from depthai_viewer._backend.device_configuration import DeviceProperties, PipelineConfiguration
 
 
@@ -12,6 +14,7 @@ class MessageType:
     DEVICE = "DeviceProperties"  # Get or set device
     ERROR = "Error"  # Error message
     INFO = "Info"  # Info message
+    WARNING = "Warning"  # Warning message
 
 
 class ErrorAction(Enum):
@@ -32,6 +35,14 @@ class Message:
         raise NotImplementedError
 
 
+class WarningMessage(Message):
+    def __init__(self, message: str):
+        self.message = message
+
+    def json(self) -> str:
+        return json.dumps({"type": MessageType.WARNING, "data": {"message": self.message}})
+
+
 class ErrorMessage(Message):
     def __init__(self, message: str, action: ErrorAction = ErrorAction.FULL_RESET):
         self.action = action
@@ -42,8 +53,15 @@ class ErrorMessage(Message):
 
 
 class DevicesMessage(Message):
-    def __init__(self, devices: List[str], message: Optional[str] = None):
-        self.devices = devices
+    def __init__(self, devices: List[dai.DeviceInfo], message: Optional[str] = None):
+        self.devices = [
+            {
+                "mxid": d.getMxId(),
+                "connection": "PoE" if d.protocol == dai.XLinkProtocol.X_LINK_TCP_IP else "Usb",
+                "name": d.name,
+            }
+            for d in devices
+        ]
         self.message = message
 
     def json(self) -> str:
