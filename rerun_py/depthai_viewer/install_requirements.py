@@ -7,9 +7,7 @@ import sys
 import traceback
 from typing import Any, Dict
 
-from depthai_viewer import (
-    version as depthai_viewer_version,  # type: ignore[attr-defined]
-)
+from depthai_viewer import version as depthai_viewer_version  # type: ignore[attr-defined]
 
 script_path = os.path.dirname(os.path.abspath(__file__))
 venv_dir = os.path.join(script_path, "venv-" + depthai_viewer_version())
@@ -109,11 +107,13 @@ def create_venv_and_install_dependencies() -> None:
             print(f"Removing old venv: {item}")
             shutil.rmtree(os.path.join(venv_dir, "..", item))
 
+        env = os.environ.copy()
+        env["PYTHONPATH"] = venv_packages_dir
         # Download blobs
         subprocess.run(
             [sys.executable, "-c", "from depthai_viewer.install_requirements import download_blobs; download_blobs()"],
             check=True,
-            env={"PYTHONPATH": venv_packages_dir},
+            env=env,
         )
 
         # Restore original SIGINT handler

@@ -1,10 +1,22 @@
 # Depthai Viewer changelog
 
+## 0.1.4
+- Added depdendency installer.
+- Added auto device selection on startup:
+    - On startup: If a preferred device is set, try to connect to that device. Else (if preferred device not found or not set) connect to the first available device.
+    - Whenever a device is selected it is designated as the preferred device. A referred device is persisted between runs of depthai-viewer.
+
+## 0.1.4-alpha.0
+
+- Added dependency installer.
+- Added auto device selection (+preferred device) on initial startup.
 
 ## 0.1.3
+
 - Fix default_stereo_pairs for OAK-1 MAX
 
 ## 0.1.2
+
 - Fix stereo depth creation for OAK-D-Pro-W 97, and potentially others
 
 ## 0.1.1
