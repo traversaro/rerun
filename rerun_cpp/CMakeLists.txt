@@ -12,9 +12,10 @@ file(GLOB_RECURSE rerun_sdk_SRC CONFIGURE_DEPENDS
 )
 
 add_library(rerun_sdk ${rerun_sdk_SRC})
+add_library(rerun_sdk::rerun_sdk ALIAS rerun_sdk)
 
 # Make sure the compiler can find include files for rerun when other libraries or executables link to rerun:
-target_include_directories(rerun_sdk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(rerun_sdk PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
 
 # Rerun needs at least C++17.
 set_target_properties(rerun_sdk PROPERTIES CXX_STANDARD 17)
@@ -225,4 +226,43 @@ target_link_libraries(rerun_sdk PRIVATE RerunArrowTarget)
 # (we don't ship them in our fetch-content bundle)
 if(DEFINED RERUN_REPOSITORY)
     add_subdirectory(tests)
+endif()
+
+option(RERUN_INSTALL_ENABLED "If enabled create the install target" OFF)
+
+if(RERUN_INSTALL_ENABLED)
+  if(NOT BUILD_SHARED_LIBS)
+    message(FATAL_ERROR "RERUN_INSTALL_ENABLED set to ON requires BUILD_SHARED_LIBS set to ON")
+  endif()
+
+  include(GNUInstallDirs)
+
+  # Install include
+  target_include_directories(rerun_sdk INTERFACE "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_INCLUDEDIR}>")
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/src/rerun.hpp
+          DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/src/rerun
+          DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+          FILES_MATCHING PATTERN "*.hpp")
+
+  # Install library
+  install(TARGETS rerun_sdk
+          EXPORT rerun_sdkTargets)
+
+  # Install cmake config files
+  install(EXPORT rerun_sdkTargets
+          FILE rerun_sdkTargets.cmake
+          NAMESPACE rerun_sdk::
+          DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/rerun_sdk)
+  include(CMakePackageConfigHelpers)
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/rerun_sdkConfig.cmake.in
+"\@PACKAGE_INIT\@
+\@RERUN_PACKAGE_DEPENDENCIES\@
+include(\"\${CMAKE_CURRENT_LIST_DIR}/rerun_sdkTargets.cmake\")
+")
+  configure_package_config_file(${CMAKE_CURRENT_BINARY_DIR}/rerun_sdkConfig.cmake.in
+                                ${CMAKE_CURRENT_BINARY_DIR}/rerun_sdkConfig.cmake
+                                INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/rerun_sdk)
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/rerun_sdkConfig.cmake
+          DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/rerun_sdk)
 endif()
