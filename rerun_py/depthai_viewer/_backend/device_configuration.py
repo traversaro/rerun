@@ -10,7 +10,7 @@ from pydantic import BaseModel
 #     enabled: bool = True
 
 
-class DepthConfiguration(BaseModel):  # type: ignore[misc]
+class StereoDepthConfiguration(BaseModel):  # type: ignore[misc]
     median: Optional[dai.MedianFilter] = dai.MedianFilter.KERNEL_7x7
     lr_check: Optional[bool] = True
     lrc_threshold: int = 5  # 0..10
@@ -26,9 +26,9 @@ class DepthConfiguration(BaseModel):  # type: ignore[misc]
         arbitrary_types_allowed = True
 
     def __init__(self, **v) -> None:  # type: ignore[no-untyped-def]
-        if v.get("median", None):
+        if v.get("median", None) and isinstance(v["median"], str):
             v["median"] = getattr(dai.MedianFilter, v["median"])
-        if v.get("align", None):
+        if v.get("align", None) and isinstance(v["align"], str):
             v["align"] = getattr(dai.CameraBoardSocket, v["align"])
         if v.get("stereo_pair", None) and all(isinstance(pair, str) for pair in v["stereo_pair"]):
             v["stereo_pair"] = (
@@ -105,6 +105,30 @@ class AiModelConfiguration(BaseModel):  # type: ignore[misc]
         }
 
 
+ALL_NEURAL_NETWORKS = [
+    AiModelConfiguration(
+        path="yolov8n_coco_640x352",
+        display_name="Yolo V8",
+        camera=dai.CameraBoardSocket.CAM_A,
+    ),
+    AiModelConfiguration(
+        path="mobilenet-ssd",
+        display_name="MobileNet SSD",
+        camera=dai.CameraBoardSocket.CAM_A,
+    ),
+    AiModelConfiguration(
+        path="face-detection-retail-0004",
+        display_name="Face Detection",
+        camera=dai.CameraBoardSocket.CAM_A,
+    ),
+    AiModelConfiguration(
+        path="age-gender-recognition-retail-0013",
+        display_name="Age gender recognition",
+        camera=dai.CameraBoardSocket.CAM_A,
+    ),
+]
+
+
 class ImuConfiguration(BaseModel):  # type: ignore[misc]
     report_rate: int = 100
     batch_report_threshold: int = 5
@@ -119,6 +143,7 @@ class CameraSensorResolution(Enum):
     THE_1440X1080: str = "THE_1440X1080"
     THE_1080_P: str = "THE_1080_P"
     THE_1200_P: str = "THE_1200_P"
+    THE_1280_P: str = "THE_1280_P"
     THE_4_K: str = "THE_4_K"
     THE_4000X3000: str = "THE_4000X3000"
     THE_12_MP: str = "THE_12_MP"
@@ -168,7 +193,8 @@ class CameraConfiguration(BaseModel):  # type: ignore[misc]
         }
 
     @classmethod
-    def create_left(cls, **kwargs) -> "CameraConfiguration":  # type: ignore[no-untyped-def]
+    # type: ignore[no-untyped-def]
+    def create_left(cls, **kwargs) -> "CameraConfiguration":
         if not kwargs.get("kind", None):
             kwargs["kind"] = dai.CameraSensorType.MONO
         if not kwargs.get("resolution", None):
@@ -176,7 +202,8 @@ class CameraConfiguration(BaseModel):  # type: ignore[misc]
         return cls(board_socket="LEFT", **kwargs)
 
     @classmethod
-    def create_right(cls, **kwargs) -> "CameraConfiguration":  # type: ignore[no-untyped-def]
+    # type: ignore[no-untyped-def]
+    def create_right(cls, **kwargs) -> "CameraConfiguration":
         if not kwargs.get("kind", None):
             kwargs["kind"] = dai.CameraSensorType.MONO
         if not kwargs.get("resolution", None):
@@ -184,7 +211,8 @@ class CameraConfiguration(BaseModel):  # type: ignore[misc]
         return cls(board_socket="RIGHT", **kwargs)
 
     @classmethod
-    def create_color(cls, **kwargs) -> "CameraConfiguration":  # type: ignore[no-untyped-def]
+    # type: ignore[no-untyped-def]
+    def create_color(cls, **kwargs) -> "CameraConfiguration":
         if not kwargs.get("kind", None):
             kwargs["kind"] = dai.CameraSensorType.COLOR
         if not kwargs.get("resolution", None):
@@ -217,8 +245,9 @@ class CameraFeatures(BaseModel):  # type: ignore[misc]
 
 
 class PipelineConfiguration(BaseModel):  # type: ignore[misc]
+    auto: bool = False  # Should the backend automatically create a pipeline?
     cameras: List[CameraConfiguration] = []
-    depth: Optional[DepthConfiguration]
+    depth: Optional[StereoDepthConfiguration]
     ai_model: Optional[AiModelConfiguration]
     imu: ImuConfiguration = ImuConfiguration()
 
@@ -277,13 +306,15 @@ size_to_resolution = {
     (640, 400): CameraSensorResolution.THE_400_P,
     (640, 480): CameraSensorResolution.THE_480_P,  # OV7251
     (1280, 720): CameraSensorResolution.THE_720_P,
+    (1280, 962): CameraSensorResolution.THE_1280_P,  # TOF
     (1280, 800): CameraSensorResolution.THE_800_P,  # OV9782
     (2592, 1944): CameraSensorResolution.THE_5_MP,  # OV5645
     (1440, 1080): CameraSensorResolution.THE_1440X1080,
     (1920, 1080): CameraSensorResolution.THE_1080_P,
     (1920, 1200): CameraSensorResolution.THE_1200_P,  # AR0234
     (3840, 2160): CameraSensorResolution.THE_4_K,
-    (4000, 3000): CameraSensorResolution.THE_4000X3000,  # IMX582 with binning enabled
+    # IMX582 with binning enabled
+    (4000, 3000): CameraSensorResolution.THE_4000X3000,
     (4056, 3040): CameraSensorResolution.THE_12_MP,  # IMX378, IMX477, IMX577
     (4208, 3120): CameraSensorResolution.THE_13_MP,  # AR214
     (5312, 6000): CameraSensorResolution.THE_5312X6000,  # IMX582 cropped
