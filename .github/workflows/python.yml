@@ -182,7 +182,7 @@ jobs:
       # ----------------------------------------------------------------------------------
 
       - name: Patch Cargo.toml for pre-release
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch'
         # After patching the pre-release version, run cargo check.
         # This updates the cargo.lock file with the new version numbers and keeps the wheel build from failing
         run: |
@@ -190,7 +190,7 @@ jobs:
           cargo check
 
       - name: Version check for tagged-release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && && github.event_name != 'workflow_dispatch'
         # This call to version_util.py will assert version from Cargo.toml matches git tagged version vX.Y.Z
         run: |
           python3 scripts/version_util.py --check_version
@@ -246,7 +246,7 @@ jobs:
   pre-release:
     name: Pre Release
     needs: [wheels]
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch'
     runs-on: "ubuntu-latest"
     steps:
       - name: Download Artifact
