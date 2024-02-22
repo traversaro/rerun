@@ -293,7 +293,7 @@ jobs:
   tagged-release:
     name: Release
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch'
     needs: [wheels]
     steps:
       - name: Download Artifact
