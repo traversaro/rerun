@@ -7,7 +7,6 @@ from ahrs.filters import Mahony
 from depthai_sdk.classes.packets import (  # PointcloudPacket,
     BasePacket,
     DepthPacket,
-    Detection,
     DetectionPacket,
     DisparityDepthPacket,
     FramePacket,
@@ -17,11 +16,24 @@ from depthai_sdk.classes.packets import (  # PointcloudPacket,
 from depthai_sdk.components import CameraComponent, Component, NNComponent, StereoComponent
 from depthai_sdk.components.tof_component import ToFComponent
 from numpy.typing import NDArray
+from pydantic import BaseModel
 
 import depthai_viewer as viewer
 from depthai_viewer._backend.store import Store
 from depthai_viewer._backend.topic import Topic
 from depthai_viewer.components.rect2d import RectFormat
+
+
+class PacketHandlerContext(BaseModel):  # type: ignore[misc]
+    class Config:
+        arbitrary_types_allowed = True
+
+
+class DetectionContext(PacketHandlerContext):
+    labels: List[str]
+    frame_width: int
+    frame_height: int
+    board_socket: dai.CameraBoardSocket
 
 
 class PacketHandler:
@@ -32,8 +44,9 @@ class PacketHandler:
     def __init__(
         self, store: Store, intrinsics_getter: Callable[[dai.CameraBoardSocket, int, int], NDArray[np.float32]]
     ):
-        viewer.init("Depthai Viewer")
-        viewer.connect()
+        viewer.init(f"Depthai Viewer {store.viewer_address}")
+        print("Connecting to viewer at", store.viewer_address)
+        viewer.connect(store.viewer_address)
         self.store = store
         self._ahrs = Mahony(frequency=100)
         self._ahrs.Q = np.array([1, 0, 0, 0], dtype=np.float64)
@@ -48,6 +61,56 @@ class PacketHandler:
     ) -> None:
         # type: ignore[assignment, misc]
         self._get_camera_intrinsics = camera_intrinsics_getter
+
+    def log_dai_packet(self, node: dai.Node, packet: dai.Buffer, context: Optional[PacketHandlerContext]) -> None:
+        if isinstance(packet, dai.ImgFrame):
+            board_socket = None
+            if isinstance(node, dai.node.ColorCamera):
+                board_socket = node.getBoardSocket()
+            elif isinstance(node, dai.node.MonoCamera):
+                board_socket = node.getBoardSocket()
+            elif isinstance(node, dai.node.Camera):
+                board_socket = node.getBoardSocket()
+            if board_socket is not None:
+                self._on_camera_frame(FramePacket("", packet), board_socket)
+            else:
+                print("Unknown node type:", type(node), "for packet:", type(packet))
+        elif isinstance(packet, dai.ImgDetections):
+            if context is None or not isinstance(context, DetectionContext):
+                print("Invalid context for detections packet", context)
+                return
+            self._on_dai_detections(packet, context)
+        else:
+            print("Unknown dai packet type:", type(packet))
+
+    def _dai_detections_to_rects_colors_labels(
+        self, packet: dai.ImgDetections, context: DetectionContext
+    ) -> Tuple[List[List[int]], List[List[int]], List[str]]:
+        rects = []
+        colors = []
+        labels = []
+        for detection in packet.detections:
+            rects.append(self._rect_from_detection(detection, context.frame_height, context.frame_width))
+            colors.append([0, 255, 0])
+            label = ""
+            # Open model zoo models output label index
+            if context.labels is not None:
+                label += context.labels[detection.label]
+            label += ", " + str(int(detection.confidence * 100)) + "%"
+            labels.append(label)
+        return rects, colors, labels
+        pass
+
+    def _on_dai_detections(self, packet: dai.ImgDetections, context: DetectionContext) -> None:
+        packet.detections
+        rects, colors, labels = self._dai_detections_to_rects_colors_labels(packet, context)
+        viewer.log_rects(
+            f"{context.board_socket.name}/transform/color_cam/Detections",
+            rects,
+            rect_format=RectFormat.XYXY,
+            colors=colors,
+            labels=labels,
+        )
 
     def log_packet(
         self,
@@ -113,6 +176,9 @@ class PacketHandler:
                 height=h,
                 encoding=viewer.ImageEncoding.NV12,
             )
+        elif packet.msg.getType() == dai.RawImgFrame.Type.GRAYF16:
+            img = img_frame.view(np.float16).reshape(h, w)
+            viewer.log_image(entity_path, img, colormap=viewer.Colormap.Magma, unit="°C")
         else:
             viewer.log_image(entity_path, img_frame)
 
@@ -175,7 +241,9 @@ class PacketHandler:
         colors = []
         labels = []
         for detection in packet.detections:
-            rects.append(self._rect_from_detection(detection, packet.frame.shape[0], packet.frame.shape[1]))
+            rects.append(
+                self._rect_from_detection(detection.img_detection, packet.frame.shape[0], packet.frame.shape[1])
+            )
             colors.append([0, 255, 0])
             label: str = detection.label_str
             # Open model zoo models output label index
@@ -197,18 +265,18 @@ class PacketHandler:
             cam = "color_cam" if component._get_camera_comp().is_color() else "mono_cam"
             viewer.log_rect(
                 f"{component._get_camera_comp()._socket.name}/transform/{cam}/Detection",
-                self._rect_from_detection(det, packet.frame.shape[0], packet.frame.shape[1]),
+                self._rect_from_detection(det.img_detection, packet.frame.shape[0], packet.frame.shape[1]),
                 rect_format=RectFormat.XYXY,
                 color=color,
                 label=label,
             )
 
-    def _rect_from_detection(self, detection: Detection, max_height: int, max_width: int) -> List[int]:
+    def _rect_from_detection(self, detection: dai.ImgDetection, max_height: int, max_width: int) -> List[int]:
         return [
-            max(min(detection.bottom_right[0], max_width), 0) * max_width,
-            max(min(detection.bottom_right[1], max_height), 0) * max_height,
-            max(min(detection.top_left[0], max_width), 0) * max_width,
-            max(min(detection.top_left[1], max_height), 0) * max_height,
+            int(min(max(detection.xmin, 0.0), 1.0) * max_width),
+            int(min(max(detection.ymin, 0.0), 1.0) * max_height),
+            int(min(max(detection.xmax, 0.0), 1.0) * max_width),
+            int(min(max(detection.ymax, 0.0), 1.0) * max_height),
         ]
 
 
