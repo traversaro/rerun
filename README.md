@@ -24,6 +24,33 @@
 
 - A working version of Python>=3.8
 
+#### On linux
+```sh
+sudo apt-get -y install \
+    libclang-dev \
+    libatk-bridge2.0 \
+    libfontconfig1-dev \
+    libfreetype6-dev \
+    libglib2.0-dev \
+    libgtk-3-dev \
+    libssl-dev \
+    libxcb-render0-dev \
+    libxcb-shape0-dev \
+    libxcb-xfixes0-dev \
+    libxkbcommon-dev \
+    patchelf
+```
+
+#### On RaspberryPI (Luxoins Image)
+Install linux dependencies listed above and the dependencies listed below.
+```sh
+sudo apt-get -y install \
+    libvulkan1 \
+    libxcb-randr0 \
+    mesa-vulkan-drivers \
+    adwaita-icon-theme-full
+```
+
 ### Install
 
 ```sh
