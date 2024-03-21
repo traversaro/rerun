@@ -41,7 +41,7 @@ sudo apt-get -y install \
     patchelf
 ```
 
-#### On RaspberryPI (Luxoins Image)
+#### On RaspberryPI (Luxonis OS Image)
 Install linux dependencies listed above and the dependencies listed below.
 ```sh
 sudo apt-get -y install \
