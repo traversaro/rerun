@@ -89,8 +89,8 @@ class StereoDepthConfiguration(BaseModel):  # type: ignore[misc]
 
 
 class AiModelConfiguration(BaseModel):  # type: ignore[misc]
-    display_name: str = "MobileNet SSD"
-    path: str = "mobilenet-ssd"
+    display_name: str = "Yolo V6"
+    path: str = "yolov6nr3_coco_640x352"
     camera: dai.CameraBoardSocket
 
     class Config:
@@ -116,8 +116,8 @@ ALL_NEURAL_NETWORKS = [
         camera=dai.CameraBoardSocket.CAM_A,
     ),
     AiModelConfiguration(
-        path="mobilenet-ssd",
-        display_name="MobileNet SSD",
+        path="yolov6nr3_coco_640x352",
+        display_name="Yolo V6",
         camera=dai.CameraBoardSocket.CAM_A,
     ),
     AiModelConfiguration(
@@ -230,6 +230,50 @@ class CameraConfiguration(BaseModel):  # type: ignore[misc]
         return cls(board_socket="RGB", **kwargs)
 
 
+class ToFConfig(BaseModel):  # type: ignore[misc]
+    median: Optional[dai.MedianFilter] = dai.MedianFilter.MEDIAN_OFF
+    phase_unwrapping_level: int = 4
+    phase_unwrap_error_threshold: int = 100
+    enable_phase_unwrapping: Optional[bool] = True
+    enable_fppn_correction: Optional[bool] = None
+    enable_optical_correction: Optional[bool] = None
+    enable_temperature_correction: Optional[bool] = None
+    enable_wiggle_correction: Optional[bool] = None
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def __init__(self, **v) -> None:  # type: ignore[no-untyped-def]
+        if v.get("median", None):
+            if isinstance(v["median"], str):
+                v["median"] = getattr(dai.MedianFilter, v["median"])
+        return super().__init__(**v)  # type: ignore[no-any-return]
+
+    def dict(self, *args, **kwargs) -> Dict[str, Any]:  # type: ignore[no-untyped-def]
+        return {
+            "median": self.median.name if self.median else None,
+            "phase_unwrapping_level": self.phase_unwrapping_level,
+            "phase_unwrap_error_threshold": self.phase_unwrap_error_threshold,
+            "enable_fppn_correction": self.enable_fppn_correction,
+            "enable_optical_correction": self.enable_optical_correction,
+            "enable_temperature_correction": self.enable_temperature_correction,
+            "enable_wiggle_correction": self.enable_wiggle_correction,
+            "enable_phase_unwrapping": self.enable_phase_unwrapping,
+        }
+
+    def to_dai(self) -> dai.RawToFConfig:
+        cfg = dai.RawToFConfig()
+        cfg.median = self.median  # type: ignore[attr-defined]
+        cfg.phaseUnwrappingLevel = self.phase_unwrapping_level  # type: ignore[attr-defined]
+        cfg.phaseUnwrapErrorThreshold = self.phase_unwrap_error_threshold  # type: ignore[attr-defined]
+        cfg.enableFPPNCorrection = self.enable_fppn_correction  # type: ignore[attr-defined]
+        cfg.enableOpticalCorrection = self.enable_optical_correction  # type: ignore[attr-defined]
+        cfg.enableTemperatureCorrection = self.enable_temperature_correction  # type: ignore[attr-defined]
+        cfg.enableWiggleCorrection = self.enable_wiggle_correction  # type: ignore[attr-defined]
+        cfg.enablePhaseUnwrapping = self.enable_phase_unwrapping  # type: ignore[attr-defined]
+        return cfg
+
+
 class CameraFeatures(BaseModel):  # type: ignore[misc]
     resolutions: List[CameraSensorResolution] = []
     max_fps: int = 60
@@ -238,6 +282,7 @@ class CameraFeatures(BaseModel):  # type: ignore[misc]
     stereo_pairs: List[dai.CameraBoardSocket] = []
     """Which cameras can be paired with this one"""
     name: str
+    tof_config: Optional[ToFConfig] = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -251,13 +296,14 @@ class CameraFeatures(BaseModel):  # type: ignore[misc]
             "supported_types": [sensor_type.name for sensor_type in self.supported_types],
             "stereo_pairs": [socket.name for socket in self.stereo_pairs],
             "name": self.name,
+            "tof_config": self.tof_config.dict() if self.tof_config else None,
         }
 
 
 class PipelineConfiguration(BaseModel):  # type: ignore[misc]
     auto: bool = False  # Should the backend automatically create a pipeline?
     cameras: List[CameraConfiguration] = []
-    depth: Optional[StereoDepthConfiguration]
+    stereo: Optional[StereoDepthConfiguration]
     ai_model: Optional[AiModelConfiguration]
     imu: ImuConfiguration = ImuConfiguration()
 

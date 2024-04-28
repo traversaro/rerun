@@ -50,7 +50,7 @@ def download_blobs() -> None:
         os.makedirs(model_dir)
     models = {
         "yolov8n_coco_640x352": "depthai",
-        "mobilenet-ssd": "intel",
+        "yolov6nr3_coco_640x352": "depthai",
         "face-detection-retail-0004": "intel",
         "age-gender-recognition-retail-0013": "intel",
         "yolov6n_thermal_people_256x192": "depthai",
@@ -91,10 +91,10 @@ def create_venv_and_install_dependencies() -> None:
                     "-m",
                     "pip",
                     "install",
-                    "depthai-sdk==1.13.1.dev0+b0340e0c4ad869711d7d5fff48e41c46fe41f475",
+                    "depthai-sdk==1.13.1.dev0+dd1a6d8a797107d24b9b91b7b63c3fcffb932712",
                     "--extra-index-url",
                     "https://artifacts.luxonis.com/artifactory/luxonis-python-snapshot-local/",
-                    # "git+https://github.com/luxonis/depthai@develop#subdirectory=depthai_sdk",
+                    # "git+https://github.com/luxonis/depthai@tof_decoding#subdirectory=depthai_sdk",
                 ],
                 check=True,
             )
