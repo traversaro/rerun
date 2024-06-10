@@ -131,6 +131,7 @@ pub enum CameraSensorResolution {
     THE_1080_P,
     THE_1200_P,
     THE_1280_P,
+    THE_1280X3848,
     THE_4_K,
     THE_4000X3000,
     THE_12_MP,
@@ -152,6 +153,7 @@ impl fmt::Display for CameraSensorResolution {
             Self::THE_1080_P => write!(f, "1080p"),
             Self::THE_1200_P => write!(f, "1200p"),
             Self::THE_1280_P => write!(f, "1280p"),
+            Self::THE_1280X3848 => write!(f, "1280x3848"),
             Self::THE_4_K => write!(f, "4k"),
             Self::THE_4000X3000 => write!(f, "4000x3000"),
             Self::THE_12_MP => write!(f, "12MP"),
@@ -355,6 +357,8 @@ pub struct ToFConfig {
     enable_temperature_correction: Option<bool>,
     enable_wiggle_correction: Option<bool>,
     enable_phase_unwrapping: Option<bool>,
+    enable_phase_shuffle_temporal_filter: Option<bool>,
+    enable_burst_mode: Option<bool>,
     #[serde(skip)]
     modified: bool,
 }
@@ -370,6 +374,8 @@ impl Default for ToFConfig {
             enable_temperature_correction: None,
             enable_wiggle_correction: None,
             enable_phase_unwrapping: None,
+            enable_phase_shuffle_temporal_filter: Some(true),
+            enable_burst_mode: Some(false),
             modified: false,
         }
     }
@@ -406,6 +412,14 @@ impl ToFConfig {
 
     pub fn get_enable_phase_unwrapping(&self) -> Option<bool> {
         self.enable_phase_unwrapping
+    }
+
+    pub fn get_enable_phase_shuffle_temporal_filter(&self) -> Option<bool> {
+        self.enable_phase_shuffle_temporal_filter
+    }
+
+    pub fn get_enable_burst_mode(&self) -> Option<bool> {
+        self.enable_burst_mode
     }
 
     pub fn set_median_filter(&mut self, median: MedianFilter) {
@@ -462,6 +476,20 @@ impl ToFConfig {
             self.modified = true;
         }
         self.enable_phase_unwrapping = enable;
+    }
+
+    pub fn set_enable_phase_shuffle_temporal_filter(&mut self, enable: Option<bool>) {
+        if self.enable_phase_shuffle_temporal_filter != enable {
+            self.modified = true;
+        }
+        self.enable_phase_shuffle_temporal_filter = enable;
+    }
+
+    pub fn set_enable_burst_mode(&mut self, enable: Option<bool>) {
+        if self.enable_burst_mode != enable {
+            self.modified = true;
+        }
+        self.enable_burst_mode = enable;
     }
 
     pub fn is_modified(&self) -> bool {

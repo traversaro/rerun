@@ -25,6 +25,7 @@ __all__ = [
 
 class ImageEncoding(Enum):
     NV12 = "NV12"
+    # Yuv420p = "Yuv420p"
 
 
 class Colormap(Enum):

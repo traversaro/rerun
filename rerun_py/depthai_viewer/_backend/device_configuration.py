@@ -154,6 +154,7 @@ class CameraSensorResolution(Enum):
     THE_1080_P: str = "THE_1080_P"
     THE_1200_P: str = "THE_1200_P"
     THE_1280_P: str = "THE_1280_P"
+    THE_1280X3848: str = "THE_1280X3848"
     THE_4_K: str = "THE_4_K"
     THE_4000X3000: str = "THE_4000X3000"
     THE_12_MP: str = "THE_12_MP"
@@ -179,6 +180,8 @@ class CameraConfiguration(BaseModel):  # type: ignore[misc]
     board_socket: dai.CameraBoardSocket
     stream_enabled: bool = True
     name: str = ""
+
+    tof_align: Optional[dai.CameraBoardSocket] = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -239,6 +242,8 @@ class ToFConfig(BaseModel):  # type: ignore[misc]
     enable_optical_correction: Optional[bool] = True
     enable_temperature_correction: Optional[bool] = False
     enable_wiggle_correction: Optional[bool] = True
+    enable_phase_shuffle_temporal_filter: Optional[bool] = True
+    enable_burst_mode: Optional[bool] = False
 
     class Config:
         arbitrary_types_allowed = True
@@ -259,18 +264,24 @@ class ToFConfig(BaseModel):  # type: ignore[misc]
             "enable_temperature_correction": self.enable_temperature_correction,
             "enable_wiggle_correction": self.enable_wiggle_correction,
             "enable_phase_unwrapping": self.enable_phase_unwrapping,
+            "enable_phase_shuffle_temporal_filter": self.enable_phase_shuffle_temporal_filter,
+            "enable_burst_mode": self.enable_burst_mode,
         }
 
     def to_dai(self) -> dai.RawToFConfig:
         cfg = dai.RawToFConfig()
-        cfg.median = self.median  # type: ignore[attr-defined]
+        cfg.median = self.median  # type: ignore[attr-defined, assignment]
         cfg.phaseUnwrappingLevel = self.phase_unwrapping_level  # type: ignore[attr-defined]
         cfg.phaseUnwrapErrorThreshold = self.phase_unwrap_error_threshold  # type: ignore[attr-defined]
-        cfg.enableFPPNCorrection = self.enable_fppn_correction  # type: ignore[attr-defined]
-        cfg.enableOpticalCorrection = self.enable_optical_correction  # type: ignore[attr-defined]
-        cfg.enableTemperatureCorrection = self.enable_temperature_correction  # type: ignore[attr-defined]
-        cfg.enableWiggleCorrection = self.enable_wiggle_correction  # type: ignore[attr-defined]
-        cfg.enablePhaseUnwrapping = self.enable_phase_unwrapping  # type: ignore[attr-defined]
+        cfg.enableFPPNCorrection = self.enable_fppn_correction  # type: ignore[attr-defined, assignment]
+        cfg.enableOpticalCorrection = self.enable_optical_correction  # type: ignore[attr-defined, assignment]
+        cfg.enableTemperatureCorrection = self.enable_temperature_correction  # type: ignore[attr-defined, assignment]
+        cfg.enableWiggleCorrection = self.enable_wiggle_correction  # type: ignore[attr-defined, assignment]
+        cfg.enablePhaseUnwrapping = self.enable_phase_unwrapping  # type: ignore[attr-defined, assignment]
+        cfg.enablePhaseShuffleTemporalFilter = (
+            self.enable_phase_shuffle_temporal_filter  # type: ignore[attr-defined, assignment]
+        )
+        cfg.enableBurstMode = self.enable_burst_mode  # type: ignore[attr-defined, assignment]
         return cfg
 
 
@@ -367,6 +378,7 @@ size_to_resolution = {
     (1280, 720): CameraSensorResolution.THE_720_P,
     (1280, 962): CameraSensorResolution.THE_1280_P,  # TOF
     (1280, 800): CameraSensorResolution.THE_800_P,  # OV9782
+    (1280, 3848): CameraSensorResolution.THE_1280X3848,  # TOF
     (2592, 1944): CameraSensorResolution.THE_5_MP,  # OV5645
     (1440, 1080): CameraSensorResolution.THE_1440X1080,
     (1920, 1080): CameraSensorResolution.THE_1080_P,

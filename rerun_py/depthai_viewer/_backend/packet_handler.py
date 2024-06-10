@@ -147,14 +147,18 @@ class PacketHandler:
         else:
             print("Unknown packet type:", type(packet))
 
-    def _on_camera_frame(self, packet: FramePacket, board_socket: dai.CameraBoardSocket) -> None:
+    def _log_img_frame(self, frame: dai.ImgFrame, board_socket: dai.CameraBoardSocket) -> None:
         viewer.log_rigid3(
             f"{board_socket.name}/transform", child_from_parent=([0, 0, 0], [1, 0, 0, 0]), xyz="RDF"
         )  # TODO(filip): Enable the user to lock the camera rotation in the UI
 
-        img_frame = packet.frame if packet.msg.getType() == dai.RawImgFrame.Type.RAW8 else packet.msg.getData()
-        h, w = packet.msg.getHeight(), packet.msg.getWidth()
-        if packet.msg.getType() == dai.ImgFrame.Type.BITSTREAM:
+        img_frame = (
+            frame.getCvFrame()
+            if frame.getType() == dai.RawImgFrame.Type.RAW8 or frame.getType() == dai.RawImgFrame.Type.YUV420p
+            else frame.getData()
+        )
+        h, w = frame.getHeight(), frame.getWidth()
+        if frame.getType() == dai.ImgFrame.Type.BITSTREAM:
             img_frame = cv2.cvtColor(cv2.imdecode(img_frame, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB)
             h, w = img_frame.shape[:2]
 
@@ -166,7 +170,7 @@ class PacketHandler:
         except Exception:
             f_len = (w * h) ** 0.5
             child_from_parent = np.array([[f_len, 0, w / 2], [0, f_len, h / 2], [0, 0, 1]])
-        cam = cam_kind_from_frame_type(packet.msg.getType())
+        cam = cam_kind_from_frame_type(frame.getType())
         viewer.log_pinhole(
             f"{board_socket.name}/transform/{cam}/",
             child_from_parent=child_from_parent,
@@ -175,19 +179,30 @@ class PacketHandler:
         )
         entity_path = f"{board_socket.name}/transform/{cam}/Image"
 
-        if packet.msg.getType() == dai.RawImgFrame.Type.NV12:
+        if frame.getType() == dai.RawImgFrame.Type.NV12:  # or frame.getType() == dai.RawImgFrame.Type.YUV420p
+            encoding = viewer.ImageEncoding.NV12
             viewer.log_encoded_image(
                 entity_path,
                 img_frame,
                 width=w,
                 height=h,
-                encoding=viewer.ImageEncoding.NV12,
+                encoding=encoding,
             )
-        elif packet.msg.getType() == dai.RawImgFrame.Type.GRAYF16:
+        elif frame.getType() == dai.RawImgFrame.Type.YUV420p:
+            viewer.log_image(entity_path, cv2.cvtColor(img_frame, cv2.COLOR_BGR2RGB))
+        elif frame.getType() == dai.RawImgFrame.Type.RAW16:
             img = img_frame.view(np.float16).reshape(h, w)
             viewer.log_image(entity_path, img, colormap=viewer.Colormap.Magma, unit="°C")
         else:
             viewer.log_image(entity_path, img_frame)
+
+    def _on_camera_frame(self, packet: FramePacket, board_socket: dai.CameraBoardSocket) -> None:
+        if board_socket in list(
+            map(lambda cam: cam.tof_align, self.store.pipeline_config.cameras if self.store.pipeline_config else [])
+        ):
+            # Skip tof aligned frames - they will be logged on_tof_packet
+            return
+        self._log_img_frame(packet.msg, board_socket)
 
     def on_imu(self, packet: IMUPacket) -> None:
         gyro: dai.IMUReportGyroscope = packet.gyroscope
@@ -215,24 +230,33 @@ class PacketHandler:
         packet: DisparityDepthPacket,
         component: ToFComponent,
     ) -> None:
+        if packet.aligned_frame:
+            self._log_img_frame(packet.aligned_frame, dai.CameraBoardSocket(packet.aligned_frame.getInstanceNum()))
         depth_frame = packet.frame
-        viewer.log_rigid3(
-            f"{component.camera_socket.name}/transform", child_from_parent=([0, 0, 0], [1, 0, 0, 0]), xyz="RDF"
-        )
-        try:
-            intrinsics = self._get_camera_intrinsics(component.camera_socket, 640, 480)
-        except Exception:
-            intrinsics = np.array([[471.451, 0.0, 317.897], [0.0, 471.539, 245.027], [0.0, 0.0, 1.0]])
-        viewer.log_pinhole(
-            f"{component.camera_socket.name}/transform/tof",
-            child_from_parent=intrinsics,
-            width=component.camera_node.getVideoWidth(),
-            height=component.camera_node.getVideoHeight(),
-        )
 
-        path = f"{component.camera_socket.name}/transform/tof/Depth"
+        if packet.aligned_frame:
+            ent_path_root = dai.CameraBoardSocket(packet.aligned_frame.getInstanceNum()).name
+        else:
+            ent_path_root = component.camera_socket.name
+        ent_path_depth = f"{ent_path_root}/transform"
+        if not packet.aligned_frame:
+            viewer.log_rigid3(f"{ent_path_root}/transform", child_from_parent=([0, 0, 0], [1, 0, 0, 0]), xyz="RDF")
+            try:
+                intrinsics = self._get_camera_intrinsics(component.camera_socket, 640, 480)
+            except Exception:
+                intrinsics = np.array([[471.451, 0.0, 317.897], [0.0, 471.539, 245.027], [0.0, 0.0, 1.0]])
+            viewer.log_pinhole(
+                f"{ent_path_root}/transform/tof",
+                child_from_parent=intrinsics,
+                width=component.camera_node.getVideoWidth(),
+                height=component.camera_node.getVideoHeight(),
+            )
+            ent_path_depth += "/tof/Depth"
+        else:
+            cam_kind = cam_kind_from_frame_type(packet.aligned_frame.getType())
+            ent_path_depth += f"/{cam_kind}/Depth"
         viewer.log_depth_image(
-            path,
+            ent_path_depth,
             depth_frame,
             meter=1e3,
             min=200.0,

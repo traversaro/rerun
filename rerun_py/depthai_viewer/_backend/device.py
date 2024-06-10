@@ -32,7 +32,12 @@ from depthai_viewer._backend.device_configuration import (
     get_size_from_resolution,
     size_to_resolution,
 )
-from depthai_viewer._backend.device_defaults import oak_d_sr_poe_default, oak_t_default
+from depthai_viewer._backend.device_defaults import (
+    oak_d_generic_default,
+    oak_d_lr_default,
+    oak_d_sr_poe_default,
+    oak_t_default,
+)
 from depthai_viewer._backend.messages import (
     ErrorMessage,
     InfoMessage,
@@ -397,6 +402,10 @@ class Device:
                 config = oak_t_default.config
             elif self._oak.device.getDeviceName() == "OAK-D-SR-POE":
                 config = oak_d_sr_poe_default.config
+            elif self._oak.device.getDeviceName() == "OAK-D-LR":
+                config = oak_d_lr_default.config
+            elif "OAK-D" in self._oak.device.getDeviceName():
+                config = oak_d_generic_default.config
             else:
                 self._create_auto_pipeline_config(config)
 
@@ -422,6 +431,7 @@ class Device:
         self.use_encoding = is_poe or is_usb2
 
         connected_camera_features = self._oak.device.getConnectedCameraFeatures()
+        create_tof_on = None
         for cam in config.cameras:
             print("Creating camera: ", cam)
 
@@ -461,9 +471,7 @@ class Device:
             # Only create a camera node if it is used by stereo or AI.
             if cam.stream_enabled:
                 if dai.CameraSensorType.TOF in camera_features.supportedTypes:
-                    sdk_cam = self._oak.create_tof(cam.board_socket)
-                    self._tof_component = sdk_cam
-                    self._queues.append((sdk_cam, self._oak.queue(sdk_cam.out.main)))
+                    create_tof_on = cam.board_socket
                 elif dai.CameraSensorType.THERMAL in camera_features.supportedTypes:
                     thermal_cam = self._oak.pipeline.create(dai.node.Camera)
                     # Hardcoded for OAK-T. The correct size is needed for correct detection parsing
@@ -491,6 +499,28 @@ class Device:
                 else:
                     print("Skipped creating camera:", cam.board_socket, "because no valid sensor resolution was found.")
                     continue
+
+        if create_tof_on is not None:
+            cam_cfg = list(filter(lambda c: c.board_socket == create_tof_on, config.cameras))
+            if len(cam_cfg) != 0:
+                cam_cfg = cam_cfg[0]
+                cam_cfg.tof_align = dai.CameraBoardSocket.CAM_B  # OAK-D-SR-PoE default.
+                tof_align = list(
+                    filter(
+                        lambda comp_and_q: (  # type: ignore[arg-type]
+                            comp_and_q[0].node.getBoardSocket() == cam_cfg.tof_align
+                            if isinstance(comp_and_q[0], CameraComponent)
+                            else False
+                        ),
+                        self._queues,
+                    )
+                )
+                tof_align = tof_align[0][0] if tof_align else None
+                sdk_cam = self._oak.create_tof(create_tof_on, tof_align)
+                self._tof_component = sdk_cam
+                self._queues.append((sdk_cam, self._oak.queue(sdk_cam.out.main)))
+            else:  # Should never happen
+                print("Couldn't find camera config for ToF, can't create ToF.")
 
         if config.stereo:
             print("Creating depth")
@@ -601,7 +631,7 @@ class Device:
 
         try:
             print("Starting pipeline")
-            self._oak.start(blocking=False)
+            self._oak.start()
         except RuntimeError as e:
             print("Couldn't start pipeline: ", e)
             return ErrorMessage("Couldn't start pipeline")

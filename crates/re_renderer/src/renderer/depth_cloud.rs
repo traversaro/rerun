@@ -16,27 +16,16 @@ use smallvec::smallvec;
 
 use crate::{
     allocator::create_and_fill_uniform_buffer_batch,
-    draw_phases::{ DrawPhase, OutlineMaskProcessor },
+    draw_phases::{DrawPhase, OutlineMaskProcessor},
     include_shader_module,
     resource_managers::{GpuTexture2D, ResourceManagerError},
     texture_info,
     view_builder::ViewBuilder,
     wgpu_resources::{
-        BindGroupDesc,
-        BindGroupEntry,
-        BindGroupLayoutDesc,
-        GpuBindGroup,
-        GpuBindGroupLayoutHandle,
-        GpuRenderPipelineHandle,
-        GpuTexture,
-        PipelineLayoutDesc,
-        RenderPipelineDesc,
-        TextureDesc,
+        BindGroupDesc, BindGroupEntry, BindGroupLayoutDesc, GpuBindGroup, GpuBindGroupLayoutHandle,
+        GpuRenderPipelineHandle, GpuTexture, PipelineLayoutDesc, RenderPipelineDesc, TextureDesc,
     },
-    Colormap,
-    OutlineMaskPreference,
-    PickingLayerObjectId,
-    PickingLayerProcessor,
+    Colormap, OutlineMaskPreference, PickingLayerObjectId, PickingLayerProcessor,
 };
 
 use super::{
@@ -64,6 +53,10 @@ mod gpu_data {
     //  Encoded textures
     // ------------------
     const SAMPLE_TYPE_NV12: u32 = 5;
+    const SAMPLE_TYPE_YUV420P: u32 = 6;
+
+    const ALBEDO_COLOR_RGB: u32 = 0;
+    const ALBEDO_COLOR_MONO: u32 = 1;
 
     /// Keep in sync with mirror in `depth_cloud.wgsl.`
     #[repr(C, align(256))]
@@ -89,16 +82,20 @@ mod gpu_data {
         /// Which colormap should be used.
         pub colormap: u32,
 
-        /// Which texture sample to use
-        pub albedo_sample_type: U32RowPadded,
+        /// Which color encoding to use.
+        /// 0: RGB, 1: MONO
+        pub albedo_color: u32,
 
         /// Which texture sample to use
-        pub depth_sample_type: U32RowPadded,
+        pub albedo_sample_type: u32,
+
+        /// Which texture sample to use
+        pub depth_sample_type: u32,
 
         /// Changes over different draw-phases.
-        pub radius_boost_in_ui_points: wgpu_buffer_types::F32RowPadded,
+        pub radius_boost_in_ui_points: f32,
 
-        pub end_padding: [wgpu_buffer_types::PaddingRow; 16 - 4 - 3 - 1 - 1 - 1 - 1 - 1],
+        pub end_padding: [wgpu_buffer_types::PaddingRow; 16 - 4 - 3 - 1 - 1 - 1],
     }
 
     impl DepthCloudInfoUBO {
@@ -136,6 +133,7 @@ mod gpu_data {
                         }
                         Some(wgpu::TextureSampleType::Uint) => match colormapped_texture.encoding {
                             Some(TextureEncoding::Nv12) => SAMPLE_TYPE_NV12,
+                            Some(TextureEncoding::Yuv420p) => SAMPLE_TYPE_YUV420P,
                             _ => SAMPLE_TYPE_UINT_NOFILTER,
                         },
                         Some(wgpu::TextureSampleType::Sint) => SAMPLE_TYPE_SINT_NOFILTER,
@@ -144,7 +142,21 @@ mod gpu_data {
                 }
                 _ => 0,
             };
-
+            let albedo_color = albedo_texture
+                .as_ref()
+                .and_then(|albedo_texture| {
+                    if albedo_texture.encoding.is_some() {
+                        return Some(ALBEDO_COLOR_RGB);
+                    }
+                    Some(
+                        match texture_info::num_texture_components(albedo_texture.texture.format())
+                        {
+                            1 => ALBEDO_COLOR_MONO,
+                            _ => ALBEDO_COLOR_RGB,
+                        },
+                    )
+                })
+                .unwrap_or(ALBEDO_COLOR_RGB);
             let depth_sample_type = match depth_texture.texture.format().sample_type(None) {
                 Some(wgpu::TextureSampleType::Float { .. }) => {
                     if texture_info::is_float_filterable(
@@ -164,14 +176,15 @@ mod gpu_data {
                 world_from_obj: (*world_from_obj).into(),
                 depth_camera_intrinsics: (*depth_camera_intrinsics).into(),
                 outline_mask_id: outline_mask_id.0.unwrap_or_default().into(),
-                world_depth_from_texture_depth: *world_depth_from_texture_depth,
-                point_radius_from_world_depth: *point_radius_from_world_depth,
-                max_depth_in_world: *max_depth_in_world,
-                colormap: *colormap as u32,
+                world_depth_from_texture_depth: (*world_depth_from_texture_depth).into(),
+                point_radius_from_world_depth: (*point_radius_from_world_depth).into(),
+                max_depth_in_world: (*max_depth_in_world).into(),
+                colormap: (*colormap as u32).into(),
                 radius_boost_in_ui_points: radius_boost_in_ui_points.into(),
                 picking_layer_object_id: *picking_object_id,
                 albedo_sample_type: albedo_sample_type.into(),
                 depth_sample_type: depth_sample_type.into(),
+                albedo_color: albedo_color.into(),
                 end_padding: Default::default(),
             }
         }
@@ -271,9 +284,8 @@ impl DrawData for DepthCloudDrawData {
 
 #[derive(thiserror::Error, Debug)]
 pub enum DepthCloudDrawDataError {
-    #[error(
-        "Depth texture format was {0:?}, only formats with sample type float are supported"
-    )] InvalidDepthTextureFormat(wgpu::TextureFormat),
+    #[error("Depth texture format was {0:?}, only formats with sample type float are supported")]
+    InvalidDepthTextureFormat(wgpu::TextureFormat),
 
     #[error("Invalid albedo texture format {0:?}")]
     InvalidAlbedoTextureFormat(wgpu::TextureFormat),
@@ -285,21 +297,25 @@ pub enum DepthCloudDrawDataError {
 impl DepthCloudDrawData {
     pub fn new(
         ctx: &mut RenderContext,
-        depth_clouds: &DepthClouds
+        depth_clouds: &DepthClouds,
     ) -> Result<Self, DepthCloudDrawDataError> {
         crate::profile_function!();
 
-        let DepthClouds { clouds: depth_clouds, radius_boost_in_ui_points_for_outlines } =
-            depth_clouds;
+        let DepthClouds {
+            clouds: depth_clouds,
+            radius_boost_in_ui_points_for_outlines,
+        } = depth_clouds;
 
-        let bg_layout = ctx.renderers
+        let bg_layout = ctx
+            .renderers
             .write()
             .get_or_create::<_, DepthCloudRenderer>(
                 &ctx.shared_renderer_data,
                 &mut ctx.gpu_resources,
                 &ctx.device,
-                &mut ctx.resolver
-            ).bind_group_layout;
+                &mut ctx.resolver,
+            )
+            .bind_group_layout;
 
         if depth_clouds.is_empty() {
             return Ok(DepthCloudDrawData {
@@ -402,7 +418,7 @@ impl DepthCloudDrawData {
                             BindGroupEntry::DefaultTextureView(albedo_texture_float_filterable)
                         ],
                         layout: bg_layout,
-                    })
+                    }),
                 )
             };
 
@@ -432,14 +448,18 @@ impl Renderer for DepthCloudRenderer {
     type RendererDrawData = DepthCloudDrawData;
 
     fn participated_phases() -> &'static [DrawPhase] {
-        &[DrawPhase::Opaque, DrawPhase::PickingLayer, DrawPhase::OutlineMask]
+        &[
+            DrawPhase::Opaque,
+            DrawPhase::PickingLayer,
+            DrawPhase::OutlineMask,
+        ]
     }
 
     fn create_renderer<Fs: FileSystem>(
         shared_data: &SharedRendererData,
         pools: &mut WgpuResourcePools,
         device: &wgpu::Device,
-        resolver: &mut FileResolver<Fs>
+        resolver: &mut FileResolver<Fs>,
     ) -> Self {
         crate::profile_function!();
 
@@ -454,9 +474,8 @@ impl Renderer for DepthCloudRenderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: (
-                                std::mem::size_of::<gpu_data::DepthCloudInfoUBO>() as u64
-                            )
+                            min_binding_size: (std::mem::size_of::<gpu_data::DepthCloudInfoUBO>()
+                                as u64)
                                 .try_into()
                                 .ok(),
                         },
@@ -523,7 +542,7 @@ impl Renderer for DepthCloudRenderer {
                         count: None,
                     },
                 ],
-            })
+            }),
         );
 
         let pipeline_layout = pools.pipeline_layouts.get_or_create(
@@ -532,13 +551,13 @@ impl Renderer for DepthCloudRenderer {
                 label: "depth_cloud_rp_layout".into(),
                 entries: vec![shared_data.global_bindings.layout, bind_group_layout],
             }),
-            &pools.bind_group_layouts
+            &pools.bind_group_layouts,
         );
 
         let shader_module = pools.shader_modules.get_or_create(
             device,
             resolver,
-            &include_shader_module!("../../shader/depth_cloud.wgsl")
+            &include_shader_module!("../../shader/depth_cloud.wgsl"),
         );
 
         let render_pipeline_desc_color = RenderPipelineDesc {
@@ -566,7 +585,7 @@ impl Renderer for DepthCloudRenderer {
             device,
             &render_pipeline_desc_color,
             &pools.pipeline_layouts,
-            &pools.shader_modules
+            &pools.shader_modules,
         );
         let render_pipeline_picking_layer = pools.render_pipelines.get_or_create(
             device,
@@ -579,7 +598,7 @@ impl Renderer for DepthCloudRenderer {
                 ..render_pipeline_desc_color.clone()
             }),
             &pools.pipeline_layouts,
-            &pools.shader_modules
+            &pools.shader_modules,
         );
         let render_pipeline_outline_mask = pools.render_pipelines.get_or_create(
             device,
@@ -590,12 +609,12 @@ impl Renderer for DepthCloudRenderer {
                 depth_stencil: OutlineMaskProcessor::MASK_DEPTH_STATE,
                 // Alpha to coverage doesn't work with the mask integer target.
                 multisample: OutlineMaskProcessor::mask_default_msaa_state(
-                    shared_data.config.hardware_tier
+                    shared_data.config.hardware_tier,
                 ),
                 ..render_pipeline_desc_color
             }),
             &pools.pipeline_layouts,
-            &pools.shader_modules
+            &pools.shader_modules,
         );
 
         DepthCloudRenderer {
@@ -611,7 +630,7 @@ impl Renderer for DepthCloudRenderer {
         pools: &'a WgpuResourcePools,
         phase: DrawPhase,
         pass: &mut wgpu::RenderPass<'a>,
-        draw_data: &'a Self::RendererDrawData
+        draw_data: &'a Self::RendererDrawData,
     ) -> anyhow::Result<()> {
         crate::profile_function!();
         if draw_data.instances.is_empty() {

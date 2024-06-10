@@ -1,5 +1,12 @@
 # Depthai Viewer changelog
 
+## 0.2.1
+
+- Fixed point cloud coloring for RGB albedo textures.
+- Better device defaults.
+- Improved OAK-D-SR-POE support.
+- Fixed temperature readings on OAK-T.
+
 ## 0.2.0
 
 - Fixed point cloud colormap normalization
