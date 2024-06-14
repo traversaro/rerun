@@ -404,6 +404,8 @@ class Device:
                 config = oak_d_sr_poe_default.config
             elif self._oak.device.getDeviceName() == "OAK-D-LR":
                 config = oak_d_lr_default.config
+            elif self._oak.device.getDeviceName() == "OAK-D-SR":
+                self._create_auto_pipeline_config(config)
             elif "OAK-D" in self._oak.device.getDeviceName():
                 config = oak_d_generic_default.config
             else:
